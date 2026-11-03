@@ -1,0 +1,23 @@
+[project]
+name = "sand3d"
+dynamic = ["version"]
+description = "3D objects written as Python programs; Blender's bpy does the geometry."
+readme = "README.md"
+requires-python = ">=3.11"
+
+[project.urls]
+Homepage = "https://github.com/Sandflow-ai/sand3d"
+Source = "https://github.com/Sandflow-ai/sand3d"
+Documentation = "https://github.com/Sandflow-ai/sand3d/blob/main/docs/api.md"
+Issues = "https://github.com/Sandflow-ai/sand3d/issues"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.dynamic]
+version = {attr = "sand3d.__version__"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["sand3d*"]

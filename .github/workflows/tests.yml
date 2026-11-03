@@ -1,0 +1,27 @@
+name: tests
+on:
+  pull_request:
+  push:
+    branches: [main]
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  suite:
+    name: bpy 5.2
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.2.0
+      - name: Libraries bpy loads
+        run: sudo apt-get update -q && sudo apt-get install -y -q --no-install-recommends
+             libxrender1 libxxf86vm1 libxfixes3 libxi6 libxkbcommon0 libsm6 libgl1 libegl1
+      - name: Venv
+        run: uv venv -p 3.13 .venv && uv pip install -p .venv -r env/kit.lock
+      - name: usd-core, apart from bpy, to read the USD export back
+        run: uv venv -p 3.12 .cache/venv-usd && uv pip install -p .cache/venv-usd usd-core==26.8
+      - name: Suite
+        env:
+          SAND3D_USD_PYTHON: .cache/venv-usd/bin/python
+        run: .venv/bin/python tests/run.py
