@@ -261,6 +261,18 @@ class Text(unittest.TestCase):
                 s3d.export(root, self.tmp / f"washer{suffix}")
         self.assertEqual(list(self.tmp.iterdir()), [])
 
+    def test_an_unknown_extension_is_refused(self):
+        """It used to write a GLB under any other name: washer.stl was a GLB."""
+        root, _ = machine()
+        for name, said in (("washer.stl", ".stl"), ("washer.gltf", ".gltf"), ("washer.OBJ", ".obj"),
+                           ("washer", "a path with no extension")):
+            with self.assertRaisesRegex(ValueError, rf"^export: {re.escape(said)} is not a format sand3d writes: "
+                                                    rf"name the file \.glb, \.urdf or \.usda$"):
+                s3d.export(root, self.tmp / name)
+        self.assertEqual(list(self.tmp.iterdir()), [])
+        s3d.export(root, self.tmp / "washer.GLB")
+        self.assertTrue((self.tmp / "washer.GLB").is_file())
+
     def test_names_become_identifiers(self):
         base = s3d.box("2 base", 100, 100, 10)
         lids = [s3d.at(s3d.box(n, 50, 50, 5), z=10) for n in ("lid-a", "lid_a")]

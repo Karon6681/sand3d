@@ -4,6 +4,8 @@ dynamic = ["version"]
 description = "3D objects written as Python programs; Blender's bpy does the geometry."
 readme = "README.md"
 requires-python = ">=3.11"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
 
 [project.urls]
 Homepage = "https://github.com/Sandflow-ai/sand3d"
@@ -12,7 +14,7 @@ Documentation = "https://github.com/Sandflow-ai/sand3d/blob/main/docs/api.md"
 Issues = "https://github.com/Sandflow-ai/sand3d/issues"
 
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.dynamic]

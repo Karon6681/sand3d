@@ -1,0 +1,29 @@
+# How to cite sand3d: GitHub shows it as "Cite this repository". The README's BibTeX says the same.
+# Version and date are those of the public release, 1.5.1: update both at each public release.
+cff-version: 1.2.0
+message: "If you use sand3d in your work, please cite it as below."
+type: software
+title: "sand3d"
+abstract: >-
+  A Python library for writing 3D objects as programs. A program describes how a shape is
+  made, in profiles, solids, edits, frames and assemblies, and Blender (bpy) computes the
+  geometry.
+authors:
+  - given-names: "Thibault"
+    family-names: "Neveu"
+    email: "thibault.neveu@sandflow.ai"
+    affiliation: "Sandflow"
+  - given-names: "Andréa"
+    family-names: "Loy"
+    email: "andrea.loy@sandflow.ai"
+    affiliation: "Sandflow"
+license: Apache-2.0
+version: 1.5.1
+date-released: 2026-11-04
+repository-code: "https://github.com/Sandflow-ai/sand3d"
+keywords:
+  - 3D
+  - procedural modeling
+  - CAD
+  - code generation
+  - Blender

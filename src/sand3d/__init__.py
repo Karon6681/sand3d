@@ -23,7 +23,9 @@ from .joints import joint, placed_again as _placed_again, placed_on as _placed_o
 from .profile import Path as _Path, Placed as _Placed, arc, circle, ellipse, mirror, offset, poly, polygon, rect, slot, spline, station, stroke, superellipse, tangent_arc, text, wrap
 from .solids import body, box, cone, cylinder, dome, extrude, helix, loft, revolve, sphere, sweep, torus, tube, wedge, wire
 
-__version__ = "1.5.0"
+# x-release-please-start-version
+__version__ = "1.5.1"
+# x-release-please-end
 
 __all__ = [
     # profiles

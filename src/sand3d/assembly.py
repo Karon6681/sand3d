@@ -80,6 +80,9 @@ def export(root, path):
         tool = "usdzip" if suffix == ".usdz" else f"usdcat x.usda -o x{suffix}"
         raise ValueError(f"export: {suffix} is written by USD's own library, which sand3d does not take: write "
                          f".usda, USD as text, and convert it with USD's tools ({tool})")
+    if suffix not in (".glb", ".urdf", ".usda"):
+        raise ValueError(f"export: {suffix or 'a path with no extension'} is not a format sand3d writes: "
+                         f"name the file .glb, .urdf or .usda")
     materials.resolve()
     if suffix == ".urdf":
         urdf.write_urdf(root, path)

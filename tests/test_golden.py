@@ -36,7 +36,8 @@ class Golden(unittest.TestCase):
         errors = sorted(k for k, v in built.items() if v.startswith("error"))
         self.assertEqual(errors, [], "pieces that raised")
         self.assertEqual(sorted(set(recorded) - set(built)), [], "pieces no longer built")
-        self.assertEqual(sorted(set(built) - set(recorded)), [], f"pieces not recorded in {golden.name}")
+        new = sorted(set(built) - set(recorded))
+        self.assertEqual(new, [], f"pieces not recorded in {golden.name}: " + ", ".join(f"{k}: {built[k]}" for k in new))
         moved = sorted(f"{k}: {recorded[k]} -> {built[k]}" for k in recorded if recorded[k] != built[k])
         self.assertEqual(moved, [], f"pieces that no longer build as recorded in {golden.name}")
 

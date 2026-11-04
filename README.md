@@ -94,6 +94,21 @@ python tests/run.py            # under a Python with bpy 5.2
 The USD export test reads files back with `usd-core` in a separate Python, set by
 `SAND3D_USD_PYTHON`. Without one, it is skipped.
 
+## Citation
+
+If you use sand3d in your work, please cite it. `CITATION.cff` holds the same, and GitHub shows it as
+"Cite this repository".
+
+```bibtex
+@misc{sand3d2026,
+  author = {Neveu, Thibault and Loy, Andr{\'e}a},
+  title  = {sand3d},
+  year   = {2026},
+  note   = {Version 1.5.1},
+  url    = {https://github.com/Sandflow-ai/sand3d}
+}
+```
+
 ## License
 
-To be decided before the public release. See [LICENSE](LICENSE).
+Apache License 2.0: see [LICENSE](LICENSE).

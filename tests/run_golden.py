@@ -30,7 +30,8 @@ MARK = "@@sand3d-golden "
 GOLDEN = HERE / "golden"
 # Cases whose digest changes with every edit of the source, by design.
 UNPINNED = {"library_fingerprint"}
-PROGRAMS = {"programs/cutlery.py": ["spoon", "fork"], "programs/washing_machine.py": ["washer", "washer_open"],
+PROGRAMS = {"programs/weight_stack.py": ["weight_stack"], "programs/tufted_chair.py": ["tufted_chair"],
+            "programs/cutlery.py": ["spoon", "fork"], "programs/washing_machine.py": ["washer", "washer_open"],
             "docs/examples/bracket.py": ["bracket"], "docs/examples/lamp.py": ["lamp"], "docs/examples/rack.py": ["rack"],
             "docs/examples/chair.py": ["chair"], "docs/examples/gate.py": ["gate"]}
 
