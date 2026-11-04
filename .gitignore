@@ -4,3 +4,6 @@ __pycache__/
 .cache/
 out/
 *.glb
+build/
+dist/
+*.egg-info/
