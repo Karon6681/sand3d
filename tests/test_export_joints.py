@@ -7,6 +7,7 @@ import os
 import struct
 import tempfile
 import unittest
+from unittest import mock
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
@@ -366,6 +367,58 @@ class Glb(unittest.TestCase):
         nodes = glb_json(self.path)["nodes"]
         self.assertEqual(sorted(n["name"] for n in nodes), ["b", "thing"])
         self.assertTrue(all("extras" not in n for n in nodes))
+
+    def test_a_glb_holds_its_root_and_nothing_else(self):
+        """Without joints the whole scene went out, every other object in the program's unit
+        read as metres: a table built beside a chair came out 1000 times too large in the
+        chair's GLB."""
+        s3d.empty_scene()
+        chair = s3d.group("chair", s3d.box("seat", 400, 400, 20))
+        s3d.at(s3d.group("table", s3d.box("top", 1200, 800, 30)), x=1000)
+        s3d.export(chair, self.path)
+        self.assertEqual(sorted(n["name"] for n in glb_json(self.path)["nodes"]), ["chair", "seat"])
+
+    def test_a_placed_or_mirrored_root_is_where_the_scene_has_it(self):
+        """The root's scale was overwritten with the metre factor: its offset stayed in
+        millimetres, 1000 times too far, and a mirror image came out turned instead."""
+        to_gltf = Matrix(((1, 0, 0, 0), (0, 0, 1, 0), (0, -1, 0, 0), (0, 0, 0, 1)))   # Z up to Y up
+        metres = Matrix.Scale(0.001, 4)
+
+        def local(n):
+            t, q, s = n.get("translation", [0] * 3), n.get("rotation", [0, 0, 0, 1]), n.get("scale", [1] * 3)
+            return Matrix.LocRotScale(Vector(t), Quaternion((q[3], q[0], q[1], q[2])), Vector(s))
+
+        s3d.at(self.root, x=1000, rz=90)
+        plain = s3d.transform(s3d.group("set", s3d.at(s3d.box("leg", 10, 20, 30), x=50, y=30)), x=1000, rz=30,
+                              mirror="x")
+        arm = s3d.at(s3d.group("arm", s3d.box("rod", 10, 10, 200)), x=300, z=500)
+        s3d.at(s3d.group("robot", arm), x=-2000, rz=45)           # a sub-assembly, exported on its own
+        for root in (self.root, plain, arm):
+            before = _core.world(root)
+            s3d.export(root, self.path)
+            self.assertEqual(_core.world(root), before, "the model stays where it was")
+            nodes = glb_json(self.path)["nodes"]
+            parent = {c: i for i, n in enumerate(nodes) for c in n.get("children", [])}
+            for i, n in enumerate(nodes):
+                if "mesh" not in n:
+                    continue
+                got, k = Matrix.Identity(4), i
+                while k is not None:
+                    got, k = local(nodes[k]) @ got, parent.get(k)
+                want = to_gltf @ metres @ _core.world(bpy.data.objects[n["name"]]) @ to_gltf.inverted()
+                for a, b in zip(got, want):
+                    for x, y in zip(a, b):
+                        self.assertAlmostEqual(x, y, places=5, msg=(root.name, n["name"]))
+
+    def test_an_export_that_fails_leaves_the_scene_as_it_was(self):
+        """The program's objects are renamed while the GLB is written: an error midway left
+        them renamed, beside the exporter's temporary objects."""
+        before = sorted(o.name for o in bpy.data.objects)
+        with mock.patch("sand3d.urdf._metres", side_effect=RuntimeError("midway")):
+            with self.assertRaisesRegex(RuntimeError, "midway"):
+                s3d.export(self.root, self.path)
+        self.assertEqual(sorted(o.name for o in bpy.data.objects), before)
+        self.assertEqual([c.name for c in bpy.data.collections], [])
 
 
 if __name__ == "__main__":

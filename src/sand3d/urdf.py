@@ -377,26 +377,27 @@ def write_urdf(root, path):
 
 # ---------------------------------------------------------------- GLB, nested by the joints
 
-def articulated(root):
-    """Whether `export(root, …)` writes something with joints."""
-    if not J.everything():
-        return False
-    return bool(Mechanism(root).bodies)
-
-
 def glb_tree(root, coll):
     """Temporary objects in `coll` that the glTF exporter writes for `root`: its parts at
     their current pose, nested by the joints, a node per joint carrying it in its extras.
     The program's objects are renamed meanwhile, so the nodes keep their names; returns
-    what `undo` needs."""
-    mech = Mechanism(root)
-    mech.check()
-    k = mech.k
+    what `undo` needs; on an error, undoes what it did before raising it."""
     renamed = []
-    for i, ob in enumerate(mech.members):
-        renamed.append((ob, ob.name))
-    for i, (ob, _) in enumerate(renamed):
-        ob.name = f"s3d~export~{i}"
+    try:
+        mech = Mechanism(root)
+        mech.check()
+        renamed += [(ob, ob.name) for ob in mech.members]
+        for i, (ob, _) in enumerate(renamed):
+            ob.name = f"s3d~export~{i}"
+        _twins(mech, renamed, coll)
+    except BaseException:
+        undo((renamed, list(coll.objects)), coll)
+        raise
+    return renamed, list(coll.objects)
+
+
+def _twins(mech, renamed, coll):
+    root, k = mech.root, mech.k
     made = {}
     for ob, name in renamed:
         twin = bpy.data.objects.new(name, ob.data if ob.type == "MESH" else None)
@@ -410,8 +411,7 @@ def glb_tree(root, coll):
         twin.matrix_basis = parent_world.inverted() @ own_world if parent_twin is not None else own_world
 
     top = made[root.as_pointer()]
-    top.matrix_basis = world[root.as_pointer()]
-    top.scale = (_metres(),) * 3
+    top.matrix_basis = Matrix.Scale(_metres(), 4) @ world[root.as_pointer()]   # the whole placement: offset, mirror
     jointed = {c.as_pointer() for c in mech.bodies}
     for ob, _ in renamed:
         if ob is root:
@@ -445,7 +445,6 @@ def glb_tree(root, coll):
             hang(twin, made[ob.parent.as_pointer()], world[ob.parent.as_pointer()], world[ob.as_pointer()])
         else:
             hang(twin, top, world[root.as_pointer()], world[ob.as_pointer()])
-    return renamed, list(coll.objects)
 
 
 def undo(state, coll):
