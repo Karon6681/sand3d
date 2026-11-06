@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.6.3 (2026-11-06)
+
+### Fixes
+
+* A GLB holds only the root's tree, in metres: the rest of the scene no longer comes
+  along, and a placed or mirrored root keeps its offset and its mirror (#11)
+
 ## 1.6.2 (2026-11-04)
 
 ### Fixes
