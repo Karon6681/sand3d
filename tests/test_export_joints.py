@@ -378,6 +378,18 @@ class Glb(unittest.TestCase):
         s3d.export(chair, self.path)
         self.assertEqual(sorted(n["name"] for n in glb_json(self.path)["nodes"]), ["chair", "seat"])
 
+    def test_the_glb_scene_is_named_after_its_root(self):
+        """A viewer shows the scene's name: the root's, not the exporter's temporary collection,
+        and a collection of the program's that bears it keeps it."""
+        s3d.empty_scene()
+        chair = s3d.group("chair", s3d.box("seat", 400, 400, 20))
+        own = bpy.data.collections.new("chair")
+        bpy.context.scene.collection.children.link(own)
+        s3d.export(chair, self.path)
+        self.assertEqual([s["name"] for s in glb_json(self.path)["scenes"]], ["chair"])
+        self.assertEqual([c.name for c in bpy.data.collections], ["chair"])
+        self.assertIs(bpy.data.collections["chair"], own)
+
     def test_a_placed_or_mirrored_root_is_where_the_scene_has_it(self):
         """The root's scale was overwritten with the metre factor: its offset stayed in
         millimetres, 1000 times too far, and a mirror image came out turned instead."""

@@ -96,16 +96,24 @@ def export(root, path):
         return
     lent = _lend_meshes()
     try:
+        name = root.name                                   # the GLB's scene: the exporter names it after coll
         coll = bpy.data.collections.new("s3d~export")      # the exporter writes this, not the whole scene
         bpy.context.scene.collection.children.link(coll)
         state = urdf.glb_tree(root, coll)
         dressed = materials.dressed()           # asked before the tags come off: it reads them
         tags = {m: m.pop(materials.TAG) for m in bpy.data.materials if materials.TAG in m}   # extras: joints only
+        clash = bpy.data.collections.get(name)  # a collection of the program's, lent its name meanwhile
         try:
+            if clash is not None:
+                clash.name = "s3d~export~lent"
+            coll.name = name
             bpy.ops.export_scene.gltf(filepath=str(path), export_format="GLB", collection=coll.name,
                                       export_extras=True,
                                       export_materials="EXPORT" if dressed else "NONE")
         finally:
+            coll.name = "s3d~export"
+            if clash is not None:
+                clash.name = name
             for m, tag in tags.items():
                 m[materials.TAG] = tag
             urdf.undo(state, coll)
