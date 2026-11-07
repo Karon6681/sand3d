@@ -720,10 +720,10 @@ def _named_edges(ob, bm, edges):
     if names is None:
         chosen = list(layers.values())
     else:
-        missing = [n for n in names if n not in layers]
+        missing = [n for n in names if _core.stored(_core.EDGE_TAG, n) not in layers]
         if missing:
             raise ValueError(_core.unknown(_core.given_name(ob), "edge", missing, sorted(layers)))
-        chosen = [layers[n] for n in names]
+        chosen = [layers[_core.stored(_core.EDGE_TAG, n)] for n in names]
     found = [e for e in bm.edges if any(e[lay] for lay in chosen)]
     if not found:
         raise ValueError(f"{_core.given_name(ob)}: no edge carries {edges!r} any more")
@@ -1044,10 +1044,10 @@ def soften(ob, r, angle=30):
 
 def _named_faces(ob, names):
     layers = {a.name[len(_core.FACE_TAG):]: a for a in ob.data.attributes if a.name.startswith(_core.FACE_TAG)}
-    missing = [n for n in names if n not in layers]
+    missing = [n for n in names if _core.stored(_core.FACE_TAG, n) not in layers]
     if missing:
         raise ValueError(_core.unknown(_core.given_name(ob), "face", missing, sorted(layers)))
-    return {i for n in names for i, d in enumerate(layers[n].data) if d.value}
+    return {i for n in names for i, d in enumerate(layers[_core.stored(_core.FACE_TAG, n)].data) if d.value}
 
 
 #: How a curved side is opened, said by `shell` when it is asked to open one by direction.
