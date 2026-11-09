@@ -26,11 +26,11 @@ import json
 import math
 import re
 
-import bpy
-from mathutils import Matrix, Vector
-
 from . import _core
+from ._backend import B
 from .frames import Frame, _clean
+
+Matrix, Vector = B.Matrix, B.Vector
 
 #: The four kinds, and what each takes.
 KINDS = ("revolute", "continuous", "prismatic", "free")
@@ -43,7 +43,7 @@ _AXIS = re.compile(r"^([+\-<>]?)([xyzXYZ])$")
 
 def joints_of(ob):
     """The joints `ob` carries, in declaration order (a list of dicts; [] for none)."""
-    raw = ob.get(JOINTS) if isinstance(ob, bpy.types.Object) else None
+    raw = ob.get(JOINTS) if B.is_object(ob) else None
     return json.loads(raw) if raw else []
 
 
@@ -52,7 +52,7 @@ def _write(ob, joints):
 
 
 def jointed(ob):
-    return isinstance(ob, bpy.types.Object) and JOINTS in ob
+    return B.is_object(ob) and JOINTS in ob
 
 
 def parent_of(ob):
@@ -95,9 +95,7 @@ def _matrix(flat):
 def _components(ob):
     """`ob`'s placement as Blender holds it — the components and the matrix they make —
     so that the rest comes back to the bit: a matrix set is decomposed again."""
-    return {"matrix": _flat16(ob.matrix_basis), "mode": ob.rotation_mode, "location": list(ob.location),
-            "euler": list(ob.rotation_euler), "quaternion": list(ob.rotation_quaternion),
-            "axis_angle": list(ob.rotation_axis_angle), "scale": list(ob.scale)}
+    return B.placement(ob)
 
 
 def _rest(ob):
@@ -106,24 +104,18 @@ def _rest(ob):
 
 def rest_basis(ob):
     """`ob`'s placement in its scene parent at rest: what pose leaves alone at 0."""
-    kept = ob.get(REST) if isinstance(ob, bpy.types.Object) else None
+    kept = ob.get(REST) if B.is_object(ob) else None
     return _matrix(json.loads(kept)["matrix"]) if kept is not None else Matrix(ob.matrix_basis)
 
 
 def _restore(ob):
     """`ob` back at its rest placement, component by component."""
-    kept = _rest(ob)
-    ob.rotation_mode = kept["mode"]
-    ob.location = kept["location"]
-    ob.rotation_euler = kept["euler"]
-    ob.rotation_quaternion = kept["quaternion"]
-    ob.rotation_axis_angle = kept["axis_angle"]
-    ob.scale = kept["scale"]
+    B.set_placement(ob, _rest(ob))
 
 
 def everything():
     """Every jointed object of the scene."""
-    return [ob for ob in bpy.context.scene.objects if JOINTS in ob]
+    return [ob for ob in B.scene_objects() if JOINTS in ob]
 
 
 def _name(ob):
@@ -176,7 +168,7 @@ def _resolve_follows(follows, child, verb):
     from .assembly import Handle
     if isinstance(follows, Handle):
         follows = follows.root
-    if isinstance(follows, bpy.types.Object):
+    if B.is_object(follows):
         if follows == child and not jointed(child):
             raise ValueError(f"{verb}: follows its own child, which has no joint yet: a joint cannot follow itself "
                              f"(a cycle)")
@@ -210,7 +202,7 @@ def _check_follow_chain(leader, k, child, verb):
         j = joints_of(leader)[k]
         if j["kind"] == "free":
             raise ValueError(f"{verb}: follows {j['name']!r}, a free joint: it has no value to follow")
-        key = (leader.as_pointer(), k)
+        key = (B.key(leader), k)
         if key in seen:
             raise ValueError(f"{verb}: follows {j['name']!r}, whose own chain of follows is a cycle")
         seen.add(key)
@@ -235,8 +227,8 @@ def _posed_above(ob):
     seen = set()
     while ob is not None:
         b = body(ob)
-        while b is not None and b.as_pointer() not in seen:
-            seen.add(b.as_pointer())
+        while b is not None and B.key(b) not in seen:
+            seen.add(B.key(b))
             for j in joints_of(b):
                 if j.get("value", 0.0) != 0.0:
                     return b, j
@@ -280,7 +272,7 @@ def joint(name, child, on, kind="revolute", axis="normal", range=None, follows=N
     if not isinstance(name, str) or not name:
         raise TypeError(f"joint: name is the joint's name, a string, not {name!r}")
     ob = child.root if isinstance(child, Handle) else child
-    if not isinstance(ob, bpy.types.Object):
+    if not B.is_object(ob):
         raise TypeError(f"{verb}: child is the part that moves — a solid, a group or an assembly — not "
                         f"{type(child).__name__}")
     if kind not in KINDS:
@@ -321,9 +313,9 @@ def joint(name, child, on, kind="revolute", axis="normal", range=None, follows=N
         if b == ob:
             raise ValueError(f"{verb}: {_name(parent)!r} already hangs on {_name(ob)!r}, through the joints "
                              f"declared: hanging {_name(ob)!r} on it makes a cycle")
-        if b.as_pointer() in seen:
+        if B.key(b) in seen:
             break
-        seen.add(b.as_pointer())
+        seen.add(B.key(b))
         b = body(parent_of(b), extra=ob) if parent_of(b) is not None else None
     leader = None
     if follows is not None:
@@ -387,7 +379,7 @@ def target(ob, joint, verb="pose"):
     named `joint` on `ob` or under it."""
     from .assembly import Handle
     root = ob.root if isinstance(ob, Handle) else ob
-    if not isinstance(root, bpy.types.Object):
+    if not B.is_object(root):
         raise TypeError(f"{verb}: ob is a jointed part, or a group above it with joint=, not {type(ob).__name__}")
     if joint is None:
         own = joints_of(root)
@@ -440,12 +432,12 @@ def pose(ob, value, joint=None):
         if not lo - slack <= value <= hi + slack:
             unit = "°" if j["kind"] == "revolute" else ""
             raise ValueError(f"{verb}: {value:g}{unit} is outside its range ({lo:g}, {hi:g})")
-    values = _values({(child.as_pointer(), k): float(value)})
+    values = _values({(B.key(child), k): float(value)})
     _left_behind(child, values)
     for ob_, joints in _scene_joints():
         changed = False
         for i, jj in enumerate(joints):
-            v = values.get((ob_.as_pointer(), i))
+            v = values.get((B.key(ob_), i))
             if v is not None and v != jj.get("value", 0.0):
                 jj["value"] = v
                 changed = True
@@ -473,9 +465,9 @@ def _values(set_now):
                 lead = leader_of(ob, i)
                 if lead is None:
                     continue
-                key = (lead.as_pointer(), j["follows"])
-                if key in values and values.get((ob.as_pointer(), i)) != j["ratio"] * values[key]:
-                    values[(ob.as_pointer(), i)] = j["ratio"] * values[key]
+                key = (B.key(lead), j["follows"])
+                if key in values and values.get((B.key(ob), i)) != j["ratio"] * values[key]:
+                    values[(B.key(ob), i)] = j["ratio"] * values[key]
                     grew = True
         if not grew:
             break
@@ -485,20 +477,20 @@ def _values(set_now):
 def _left_behind(child, values):
     """Refuse a part placed on a frame read on a part this pose moves, if it does not move
     with it: it would stay behind."""
-    movers = {ob.as_pointer() for ob in everything() for i in range(len(joints_of(ob)))
-              if (ob.as_pointer(), i) in values}
+    movers = {B.key(ob) for ob in everything() for i in range(len(joints_of(ob)))
+              if (B.key(ob), i) in values}
 
     def moves(ob):
         b = body(ob)
         seen = set()
-        while b is not None and b.as_pointer() not in seen:
-            if b.as_pointer() in movers:
+        while b is not None and B.key(b) not in seen:
+            if B.key(b) in movers:
                 return True
-            seen.add(b.as_pointer())
+            seen.add(B.key(b))
             p = parent_of(b)
             b = body(p) if p is not None else None
         return False
-    for ob in bpy.context.scene.objects:
+    for ob in B.scene_objects():
         part = ob.get(ON)
         if part is not None and moves(part) and not moves(ob):
             raise ValueError(f"pose: {_name(ob)!r} was placed on a frame read on {_name(part)!r}, which this pose "
@@ -527,11 +519,11 @@ class Kinematics:
     posed in."""
 
     def __init__(self):
-        self.data = {ob.as_pointer(): joints_of(ob) for ob in everything()}
+        self.data = {B.key(ob): joints_of(ob) for ob in everything()}
         self._rest, self._posed = {}, {}
 
     def rest_world(self, ob):
-        key = ob.as_pointer()
+        key = B.key(ob)
         if key not in self._rest:
             local = ob.matrix_parent_inverse @ (rest_basis(ob) if key in self.data else ob.matrix_basis)
             self._rest[key] = _core.snapped(self.rest_world(ob.parent) @ local) if ob.parent else Matrix(local)
@@ -540,10 +532,10 @@ class Kinematics:
     def still(self, ob):
         """Whether `ob`'s body and every body above it are at rest."""
         b, seen = body(ob), set()
-        while b is not None and b.as_pointer() not in seen:
-            if any(j.get("value", 0.0) != 0.0 for j in self.data[b.as_pointer()]):
+        while b is not None and B.key(b) not in seen:
+            if any(j.get("value", 0.0) != 0.0 for j in self.data[B.key(b)]):
                 return False
-            seen.add(b.as_pointer())
+            seen.add(B.key(b))
             p = parent_of(b)
             b = body(p) if p is not None else None
         return True
@@ -554,7 +546,7 @@ class Kinematics:
         return self.rest_world(c) if p is None else self.posed(p) @ self.rest_world(p).inverted() @ self.rest_world(c)
 
     def posed_body(self, c):
-        key = c.as_pointer()
+        key = B.key(c)
         if key not in self._posed:
             self._posed[key] = None              # a cycle stops here (declaring refuses them)
             m = self.hung(c)
@@ -578,7 +570,7 @@ class Kinematics:
         k-th rides on the motions of those before it."""
         m = self.rest_world(c) if rest else self.hung(c)
         out = []
-        for j in self.data[c.as_pointer()]:
+        for j in self.data[B.key(c)]:
             K = _matrix(j["pivot"])
             d = None if rest else _motion(j)
             out.append(m @ K @ (K.inverted() @ d @ K if d is not None else Matrix.Identity(4)))
@@ -616,17 +608,17 @@ def refuse_using_up(tools, verb):
     for ob in everything():
         p = parent_of(ob)
         if p is not None:
-            held.setdefault(p.as_pointer(), (ob, joints_of(ob)[0]["name"]))
+            held.setdefault(B.key(p), (ob, joints_of(ob)[0]["name"]))
     for tool in tools:
-        if not isinstance(tool, bpy.types.Object) or _guard_removed(tool):
+        if not B.is_object(tool) or _guard_removed(tool):
             continue
         found = joints_of(tool)
         if found:
             raise ValueError(f"{verb}: {_name(tool)!r} moves by its joint {found[0]['name']!r}: {verb} would use it "
                              f"up, and the joint with it (a copy carries its joints too) — make the tool from a part "
                              f"that does not move; s3d.seat(host, part) cuts the cavity and leaves the part as it is")
-        if tool.as_pointer() in held:
-            ob, jname = held[tool.as_pointer()]
+        if B.key(tool) in held:
+            ob, jname = held[B.key(tool)]
             raise ValueError(f"{verb}: {_name(ob)!r} hangs on {_name(tool)!r} by {jname!r}: {verb} would use "
                              f"{_name(tool)!r} up, and leave the joint on nothing")
 
@@ -639,13 +631,7 @@ def _guard_removed(ob):
 def moved(ob, m):
     """`transform` moved `ob` by `m` in its parent's space: its rest moves with it."""
     if jointed(ob):
-        scratch = bpy.data.objects.new("s3d~scratch", None)      # Blender's own decomposition of the new rest
-        try:
-            scratch.rotation_mode = _rest(ob)["mode"]
-            scratch.matrix_basis = m @ rest_basis(ob)
-            ob[REST] = json.dumps(_components(scratch))
-        finally:
-            bpy.data.objects.remove(scratch)
+        ob[REST] = json.dumps(B.placement_of(m @ rest_basis(ob), _rest(ob)["mode"]))   # the backend's own decomposition
 
 
 def remap(twins):
@@ -667,7 +653,7 @@ def placed_on(ob, on):
     """Record the part the frame `ob` was placed on was read on, and where the frame put
     `ob` on it (or forget both: a frame built by hand, or read on a part a verb has used
     up since)."""
-    if not isinstance(ob, bpy.types.Object):
+    if not B.is_object(ob):
         return
     part = getattr(on, "part", None)
     if part is not None and not _guard_removed(part):
@@ -689,7 +675,7 @@ def placed_again(ob):
             placed_again(o)
         return
     ob = ob.root if isinstance(ob, Handle) else ob
-    if not isinstance(ob, bpy.types.Object):
+    if not B.is_object(ob):
         return
     for o in [ob, *ob.children_recursive]:
         part = o.get(ON)

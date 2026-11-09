@@ -21,10 +21,10 @@ import math
 import os
 import xml.etree.ElementTree as ET
 
-import bpy
-from mathutils import Matrix, Vector
-
 from . import _core, joints as J, materials
+from ._backend import B
+
+Matrix, Vector = B.Matrix, B.Vector
 
 #: URDF's word for each kind.
 TYPES = {"revolute": "revolute", "continuous": "continuous", "prismatic": "prismatic", "free": "floating"}
@@ -43,14 +43,14 @@ class Mechanism:
         seen = set()
         while stack:                                     # the root's tree, and what hangs on it
             ob = stack.pop()
-            if ob.as_pointer() in seen:
+            if B.key(ob) in seen:
                 continue
-            seen.add(ob.as_pointer())
+            seen.add(B.key(ob))
             members.append(ob)
             stack.extend(ob.children)
             if not stack:
-                stack.extend(o for o in J.everything() if o.as_pointer() not in seen
-                             and J.parent_of(o) is not None and J.parent_of(o).as_pointer() in seen)
+                stack.extend(o for o in J.everything() if B.key(o) not in seen
+                             and J.parent_of(o) is not None and B.key(J.parent_of(o)) in seen)
         self.members = members
         self.ids = seen
         self.k = J.Kinematics()
@@ -62,15 +62,15 @@ class Mechanism:
         for c in self.order:
             n = len(J.joints_of(c))
             for k, j in enumerate(J.joints_of(c)):
-                self.joint_names[(c.as_pointer(), k)] = self.names.joint(j["name"])
+                self.joint_names[(B.key(c), k)] = self.names.joint(j["name"])
                 if k < n - 1:
-                    self.link[(c.as_pointer(), k)] = self.names.link(f"{_core.given_name(c)}_{j['name']}")
-            self.link[c.as_pointer()] = self.names.link(_core.given_name(c))
+                    self.link[(B.key(c), k)] = self.names.link(f"{_core.given_name(c)}_{j['name']}")
+            self.link[B.key(c)] = self.names.link(_core.given_name(c))
 
     def body(self, ob):
         """The body `ob` moves with: a jointed part of the mechanism, or None (the root's)."""
         while ob is not None and ob is not self.root:
-            if J.jointed(ob) and ob.as_pointer() in self.ids:
+            if J.jointed(ob) and B.key(ob) in self.ids:
                 return ob
             ob = ob.parent
         return None
@@ -82,12 +82,12 @@ class Mechanism:
         """Bodies parents first, siblings by name."""
         out, done, left = [], set(), _order(self.bodies)
         while left:
-            ready = [c for c in left if self.parent_body(c) is None or self.parent_body(c).as_pointer() in done]
+            ready = [c for c in left if self.parent_body(c) is None or B.key(self.parent_body(c)) in done]
             if not ready:
                 raise ValueError(f"export: the joints of {_core.given_name(left[0])!r} make a cycle")
             out += ready
-            done |= {c.as_pointer() for c in ready}
-            left = [c for c in left if c.as_pointer() not in done]
+            done |= {B.key(c) for c in ready}
+            left = [c for c in left if B.key(c) not in done]
         return out
 
     def rest(self):
@@ -103,10 +103,10 @@ class Mechanism:
         for c in self.order:
             js = J.joints_of(c)
             parent = self.parent_body(c)
-            above = parent.as_pointer() if parent is not None else None
+            above = B.key(parent) if parent is not None else None
             for idx, (F, j) in enumerate(zip(k.frames(c, rest=True), js)):
                 F = _proper(_d(F))
-                key = (c.as_pointer(), idx) if idx < len(js) - 1 else c.as_pointer()
+                key = (B.key(c), idx) if idx < len(js) - 1 else B.key(c)
                 frame[key] = F
                 if idx < len(js) - 1:
                     links.append((key, None))
@@ -117,13 +117,13 @@ class Mechanism:
                 follows = None
                 if j.get("follows") is not None:
                     leader = J.leader_of(c, idx)
-                    follows = (self.joint_names[(leader.as_pointer(), j["follows"])], j["ratio"],
+                    follows = (self.joint_names[(B.key(leader), j["follows"])], j["ratio"],
                                J.joints_of(leader)[j["follows"]]["kind"])
-                joints.append({"name": self.joint_names[(c.as_pointer(), idx)], "type": _effective_type(c, idx, j),
+                joints.append({"name": self.joint_names[(B.key(c), idx)], "type": _effective_type(c, idx, j),
                                "kind": j["kind"], "parent": above, "child": key, "axis": axis,
                                "span": _span(c, idx, j), "follows": follows})
                 above = key
-            links.append((c.as_pointer(), c))
+            links.append((B.key(c), c))
         return [(key, body, frame[key]) for key, body in links], joints
 
     def meshes(self, b):
@@ -136,12 +136,12 @@ class Mechanism:
             p = J.parent_of(c)
             if p is None:
                 raise ValueError(f"export: {_core.given_name(c)!r} hangs on a part that was deleted")
-            if p.as_pointer() not in self.ids:
+            if B.key(p) not in self.ids:
                 raise ValueError(f"export: {_core.given_name(c)!r} hangs on {_core.given_name(p)!r}, which is not in "
                                  f"{top!r}: export a group that holds both")
             for k, j in enumerate(J.joints_of(c)):
                 lead = J.leader_of(c, k) if j.get("follows") is not None else None
-                if j.get("follows") is not None and (lead is None or lead.as_pointer() not in self.ids):
+                if j.get("follows") is not None and (lead is None or B.key(lead) not in self.ids):
                     what = "a part that was deleted" if lead is None else f"{_core.given_name(lead)!r}, not in {top!r}"
                     raise ValueError(f"export: {j['name']!r} on {_core.given_name(c)!r} follows a joint of {what}: "
                                      f"export a group that holds both")
@@ -182,7 +182,7 @@ def _metres():
     return _core.MM / 1000.0
 
 
-# Frames are composed here in double precision: mathutils is single, and a pivot at
+# Frames are composed here in double precision: `Matrix` is single, and a pivot at
 # 850 mm would come out at 0.850000024 m.
 
 def _d(m):
@@ -306,15 +306,13 @@ def _write_obj(path, ob, m, unit):
     me = ob.data
     flip = _det3(m) < 0
     rows = [[m[r][c] * unit for c in range(4)] for r in range(3)]
-    co = [0.0] * (3 * len(me.vertices))
-    me.vertices.foreach_get("co", co)
+    co = B.mesh_coords(me)
     lines = [f"# {_core.given_name(ob)} — written by sand3d", f"o {_core.given_name(ob)}"]
     for i in range(0, len(co), 3):
         x, y, z = co[i], co[i + 1], co[i + 2]
         lines.append("v " + _vec(r[0] * x + r[1] * y + r[2] * z + r[3] for r in rows))
-    me.calc_loop_triangles()                  # Blender's triangles: a concave face fanned by a reader is wrong
-    for t in me.loop_triangles:
-        vs = [i + 1 for i in t.vertices]
+    for t in B.mesh_triangles(me):            # the backend's triangles: a concave face fanned by a reader is wrong
+        vs = [i + 1 for i in t]
         if flip:
             vs.reverse()
         lines.append("f " + " ".join(map(str, vs)))
@@ -391,39 +389,37 @@ def glb_tree(root, coll):
             ob.name = f"s3d~export~{i}"
         _twins(mech, renamed, coll)
     except BaseException:
-        undo((renamed, list(coll.objects)), coll)
+        undo((renamed, B.collection_objects(coll)), coll)
         raise
-    return renamed, list(coll.objects)
+    return renamed, B.collection_objects(coll)
 
 
 def _twins(mech, renamed, coll):
     root, k = mech.root, mech.k
     made = {}
     for ob, name in renamed:
-        twin = bpy.data.objects.new(name, ob.data if ob.type == "MESH" else None)
-        coll.objects.link(twin)
-        made[ob.as_pointer()] = twin
-    world = {ob.as_pointer(): _core.world(ob) for ob, _ in renamed}
+        twin = B.new_object(name, ob.data if ob.type == "MESH" else None, collection=coll)
+        made[B.key(ob)] = twin
+    world = {B.key(ob): _core.world(ob) for ob, _ in renamed}
 
     def hang(twin, parent_twin, parent_world, own_world):
         twin.parent = parent_twin
         twin.matrix_parent_inverse = Matrix.Identity(4)
         twin.matrix_basis = parent_world.inverted() @ own_world if parent_twin is not None else own_world
 
-    top = made[root.as_pointer()]
-    top.matrix_basis = Matrix.Scale(_metres(), 4) @ world[root.as_pointer()]   # the whole placement: offset, mirror
-    jointed = {c.as_pointer() for c in mech.bodies}
+    top = made[B.key(root)]
+    top.matrix_basis = Matrix.Scale(_metres(), 4) @ world[B.key(root)]   # the whole placement: offset, mirror
+    jointed = {B.key(c) for c in mech.bodies}
     for ob, _ in renamed:
         if ob is root:
             continue
-        twin = made[ob.as_pointer()]
-        if ob.as_pointer() in jointed:
+        twin = made[B.key(ob)]
+        if B.key(ob) in jointed:
             parent = J.parent_of(ob)
-            above_twin, above_world = made[parent.as_pointer()], world[parent.as_pointer()]
+            above_twin, above_world = made[B.key(parent)], world[B.key(parent)]
             frames = k.frames(ob)
             for idx, (F, j) in enumerate(zip(frames, J.joints_of(ob))):
-                node = bpy.data.objects.new(mech.joint_names[(ob.as_pointer(), idx)], None)
-                coll.objects.link(node)
+                node = B.new_object(mech.joint_names[(B.key(ob), idx)], None, collection=coll)
                 hang(node, above_twin, above_world, F)
                 span = _span(ob, idx, j)
                 f = _si(j["kind"])
@@ -436,21 +432,21 @@ def _twins(mech, renamed, coll):
                 if j.get("follows") is not None:
                     leader = J.leader_of(ob, idx)
                     lead = J.joints_of(leader)[j["follows"]]
-                    extras["mimic"] = {"joint": mech.joint_names[(leader.as_pointer(), j["follows"])],
+                    extras["mimic"] = {"joint": mech.joint_names[(B.key(leader), j["follows"])],
                                        "multiplier": j["ratio"] * f / _si(lead["kind"])}
                 node["s3d_joint"] = extras
                 above_twin, above_world = node, F
-            hang(twin, above_twin, above_world, world[ob.as_pointer()])
-        elif ob.parent is not None and ob.parent.as_pointer() in made:
-            hang(twin, made[ob.parent.as_pointer()], world[ob.parent.as_pointer()], world[ob.as_pointer()])
+            hang(twin, above_twin, above_world, world[B.key(ob)])
+        elif ob.parent is not None and B.key(ob.parent) in made:
+            hang(twin, made[B.key(ob.parent)], world[B.key(ob.parent)], world[B.key(ob)])
         else:
-            hang(twin, top, world[root.as_pointer()], world[ob.as_pointer()])
+            hang(twin, top, world[B.key(root)], world[B.key(ob)])
 
 
 def undo(state, coll):
     renamed, temps = state
     for t in temps:
-        bpy.data.objects.remove(t)
-    bpy.data.collections.remove(coll)
+        B.remove_object(t)
+    B.remove_collection(coll)
     for ob, name in renamed:
         ob.name = name

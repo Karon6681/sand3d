@@ -18,17 +18,14 @@ import math
 import warnings
 from copy import deepcopy
 
-import bpy
-import bmesh
-from mathutils import Matrix, Vector
-from mathutils.bvhtree import BVHTree
-from mathutils.kdtree import KDTree
-
 from . import _core, _guard
+from ._backend import B
 from .frames import Frame, frames_of
 from .joints import refuse_using_up
 from .profile import Path, Placed, Profile, poly
 from .solids import _drawing, extrude, revolve
+
+Matrix, Vector, KDTree = B.Matrix, B.Vector, B.KDTree
 
 OPERAND = "s3d~operand"
 #: Custom property marking an object `merge` made: its shells may overlap.
@@ -43,59 +40,26 @@ WELD = 1e-5
 
 def _tool_mesh(tool, rel, strip):
     """A copy of `tool`'s mesh in the target's space, its plain names dropped if `strip`."""
-    me = tool.data.copy()
-    me.transform(rel)
+    me = B.copy_mesh(tool.data)
+    B.transform_mesh(me, rel)
     if rel.to_3x3().determinant() < 0:
-        me.flip_normals()
+        B.flip_mesh_normals(me)
     if strip:
-        names = [a.name for a in me.attributes]  # by name: removing one invalidates the others (bpy 4.5)
+        names = list(B.mesh_attributes(me))
         for name in names:
             for prefix in (_core.FACE_TAG, _core.EDGE_TAG):
                 if name.startswith(prefix) and "." not in name[len(prefix):]:
-                    me.attributes.remove(me.attributes[name])
+                    B.remove_mesh_attribute(me, name)
                     break
     return me
 
 
-def _evaluate(base_mesh, tool_meshes, operation, self_intersect=False):
-    """Run one EXACT boolean on temporary objects; the evaluated mesh."""
-    coll = bpy.data.collections.new("_s3d_tools")
-    bpy.context.scene.collection.children.link(coll)
-    base = _core.link(bpy.data.objects.new("_s3d_base", base_mesh))
-    tools = []
-    for me in tool_meshes:
-        t = bpy.data.objects.new("_s3d_tool", me)
-        coll.objects.link(t)
-        tools.append(t)
-    mod = base.modifiers.new("boolean", "BOOLEAN")
-    mod.operation, mod.solver = operation, "EXACT"
-    mod.use_self = self_intersect
-    if len(tools) == 1:
-        mod.operand_type, mod.object = "OBJECT", tools[0]
-    else:
-        mod.operand_type, mod.collection = "COLLECTION", coll
-    depsgraph = bpy.context.evaluated_depsgraph_get()
-    result = bpy.data.meshes.new_from_object(base.evaluated_get(depsgraph), preserve_all_data_layers=True,
-                                             depsgraph=depsgraph)
-    for t in tools:
-        bpy.data.objects.remove(t)
-    bpy.data.objects.remove(base)
-    bpy.data.collections.remove(coll)
-    for me in [base_mesh, *tool_meshes]:
-        if me.users == 0:
-            bpy.data.meshes.remove(me)
-    return result
-
-
 def _solve(base_mesh, tool_meshes, operation, self_intersect):
     """The EXACT result as a bmesh, in a fixed order, its cracks welded."""
-    result = _evaluate(base_mesh, tool_meshes, operation, self_intersect)
-    bm = bmesh.new()
-    bm.from_mesh(result)
-    bpy.data.meshes.remove(result)
+    bm = B.boolean(base_mesh, tool_meshes, operation, self_intersect)
     _sort_mesh(bm)                       # the modifier's edges come in an order set by the thread count
-    bmesh.ops.remove_doubles(bm, verts=bm.verts, dist=_core.mm(WELD))
-    bmesh.ops.dissolve_degenerate(bm, dist=_core.mm(WELD), edges=bm.edges)
+    B.weld(bm, _core.mm(WELD))
+    B.dissolve_degenerate(bm, _core.mm(WELD))
     _drop_duplicates(bm)
     return bm
 
@@ -115,25 +79,24 @@ def _drop_duplicates(bm):
             seen[key] = f
     if not extra:
         return
-    tags = [lay for lay in bm.faces.layers.bool.values() if lay.name.startswith(_core.FACE_TAG)]
+    tags = list(_core.tag_layers(bm, "faces").values())
     for kept, f in extra:
         for lay in tags:
             if f[lay]:
                 kept[lay] = True
-    bmesh.ops.delete(bm, geom=[f for _, f in extra], context="FACES_ONLY")
+    B.delete_faces(bm, [f for _, f in extra])
 
 
 def _operands(ob, tools, strip):
     """`ob`'s mesh and the tools' meshes in `ob`'s frame, each face marked with its operand."""
     to_local = _core.world(ob).inverted()
-    base_mesh = ob.data.copy()
-    base_mesh.attributes.new(OPERAND, "INT", "FACE")
+    base_mesh = B.copy_mesh(ob.data)
+    B.add_face_attribute(base_mesh, OPERAND)
     tool_meshes = []
     for k, tool in enumerate(tools, 1):
         rel = to_local @ _core.world(tool)
         me = _tool_mesh(tool, rel, strip)
-        att = me.attributes.new(OPERAND, "INT", "FACE")
-        att.data.foreach_set("value", [k] * len(me.polygons))
+        B.add_face_attribute(me, OPERAND, [k] * B.mesh_counts(me)[1])
         reach = max(abs(c) for m in (_core.world(ob), _core.world(tool)) for c in m.translation)
         _settle(base_mesh, me, reach)
         tool_meshes.append(me)
@@ -156,12 +119,10 @@ def _settle(base_mesh, me, reach):
     breaks. On the target's coordinate, the contact is exactly flush. Where the
     target has several values that close (a revolve's 3e-15 where cos 90° is 0), the
     tool is left alone."""
-    co = [0.0] * (3 * len(base_mesh.vertices))
-    base_mesh.vertices.foreach_get("co", co)
+    co = B.mesh_coords(base_mesh)
     planes = [sorted(set(co[axis::3])) for axis in range(3)]
     floor = max(_core.mm(WELD), _noise(reach))
-    co = [0.0] * (3 * len(me.vertices))
-    me.vertices.foreach_get("co", co)
+    co = B.mesh_coords(me)
     moved = False
     for i, c in enumerate(co):
         values = planes[i % 3]
@@ -171,16 +132,14 @@ def _settle(base_mesh, me, reach):
             co[i] = values[lo]
             moved = True
     if moved:
-        me.vertices.foreach_set("co", co)
-        me.update()
+        B.set_mesh_coords(me, co)
 
 
 def _extent(meshes):
     """(lo, hi) corners of the box round every vertex of `meshes`."""
     lo, hi = [math.inf] * 3, [-math.inf] * 3
     for me in meshes:
-        co = [0.0] * (3 * len(me.vertices))
-        me.vertices.foreach_get("co", co)
+        co = B.mesh_coords(me)
         for axis in range(3):
             if co:
                 lo[axis] = min(lo[axis], min(co[axis::3]))
@@ -205,7 +164,7 @@ class _Operands:
             first = next((j for j, other in kept.get(shape.key, ()) if other.same(shape)), None)
             if first is not None:
                 self.same[k] = first
-                bpy.data.meshes.remove(me)
+                B.remove_mesh(me)
             else:
                 kept.setdefault(shape.key, []).append((k, shape))
                 self.tools.append(me)
@@ -235,11 +194,10 @@ class _Shape:
 
     def __init__(self, me):
         self.me = me
-        co = [0.0] * (3 * len(me.vertices))
-        me.vertices.foreach_get("co", co)
-        n = max(len(me.vertices), 1)
+        co = B.mesh_coords(me)
+        n = max(len(co) // 3, 1)
         self.centre = Vector([sum(co[i::3]) / n for i in range(3)])
-        self.key = (len(me.vertices), len(me.polygons))
+        self.key = B.mesh_counts(me)
         self.near = max(_core.mm(WELD), _noise(max((abs(c) for c in co), default=0.0)))
         self.tree = None
 
@@ -247,18 +205,19 @@ class _Shape:
         if (self.centre - other.centre).length > self.near:
             return False
         if self.tree is None:
-            self.tree = KDTree(len(self.me.vertices))
-            for v in self.me.vertices:
-                self.tree.insert(v.co, v.index)
+            points = B.mesh_points(self.me)
+            self.tree = KDTree(len(points))
+            for i, co in enumerate(points):
+                self.tree.insert(co, i)
             self.tree.balance()
         to = []
-        for v in other.me.vertices:
-            _, i, d = self.tree.find(v.co)
+        for co in B.mesh_points(other.me):
+            _, i, d = self.tree.find(co)
             if d > max(self.near, other.near):
                 return False
             to.append(i)
-        faces = {frozenset(p.vertices) for p in self.me.polygons}
-        return all(frozenset(to[i] for i in p.vertices) in faces for p in other.me.polygons)
+        faces = {frozenset(p) for p in B.mesh_faces(self.me)}
+        return all(frozenset(to[i] for i in p) in faces for p in B.mesh_faces(other.me))
 
 
 class NothingCut(ValueError):
@@ -308,7 +267,7 @@ def _boolean(ob, tools, operation, strip, self_intersect=False, verb="boolean", 
     if operation == "DIFFERENCE":
         # a tool that leaves no face took no volume out: it only touched, and printed its
         # footprint on the face it stands on, in slivers a later bevel clamps to nothing
-        layer = bm.faces.layers.int[OPERAND]
+        layer = B.layer(bm, "faces", "int", OPERAND)
         used = {f[layer] for f in bm.faces}
         used |= {k for k, first in operands.same.items() if first in used}
         removing = [t for k, t in enumerate(tools, 1) if k in used]
@@ -335,25 +294,24 @@ def _boolean(ob, tools, operation, strip, self_intersect=False, verb="boolean", 
     tool_names = [{_core.given_name(tool)} for tool in tools]
     for k, first in operands.same.items():          # a tool left out names its twin's edges
         tool_names[first - 1].add(_core.given_name(tools[k - 1]))
-    layer = bm.faces.layers.int[OPERAND]
+    layer = B.layer(bm, "faces", "int", OPERAND)
     bm.faces.index_update()
     bm.edges.index_update()
     operand = [f[layer] for f in bm.faces]
     face_add = {}
     if strip:
         face_add = {f.index: {"cut", f"{name}.cut"} for f in bm.faces if operand[f.index] > 0}
-    caps = [lay for lay in bm.faces.layers.bool.values()
-            if lay.name.startswith(_core.FACE_TAG) and _is_cap(lay.name[len(_core.FACE_TAG):])]
+    caps = [(t, lay) for t, lay in _core.tag_layers(bm, "faces").items() if _is_cap(t)]
     edge_add = {}
     for e in bm.edges:
         ids = {operand[f.index] for f in e.link_faces}
         if len(ids) > 1:
             # plain cap names say what an edge bounds; qualified ones keep saying who made it
-            bounds = {lay.name[len(_core.FACE_TAG):] for f in e.link_faces for lay in caps
-                      if f[lay] and "." not in lay.name[len(_core.FACE_TAG):]}
+            bounds = {t for f in e.link_faces for t, lay in caps
+                      if f[lay] and "." not in t}
             edge_add[e.index] = {"cut", f"{name}.cut"} | set().union(*(tool_names[i - 1] for i in ids if i > 0)) \
                 | bounds
-    bm.faces.layers.int.remove(layer)
+    B.remove_layer(bm, "faces", "int", OPERAND)
     _core.add_tags(bm, face_add, edge_add)
     _flatten_names(bm)
     _replace_mesh(ob, bm)
@@ -366,7 +324,7 @@ def _boolean(ob, tools, operation, strip, self_intersect=False, verb="boolean", 
 
 def _flatten_names(bm):
     """Untag the named edges that now lie flat between two coplanar faces."""
-    layers = [lay for lay in bm.edges.layers.bool.values() if lay.name.startswith(_core.EDGE_TAG)]
+    layers = list(_core.tag_layers(bm, "edges").values())
     for e in bm.edges:
         if len(e.link_faces) == 2 and e.link_faces[0].normal.dot(e.link_faces[1].normal) > FLAT:
             if any(e[lay] for lay in layers):
@@ -378,14 +336,8 @@ def _flatten_names(bm):
 def _replace_mesh(ob, bm):
     """`bm` as `ob`'s mesh. Normals are not recomputed: a boolean's are right, and a
     void inside a shell must keep facing in."""
-    old = ob.data
-    mesh = bpy.data.meshes.new(old.name)
-    bm.to_mesh(mesh)
-    bm.free()
-    ob.data = mesh
-    if old.users == 0:
-        bpy.data.meshes.remove(old)
-    mesh.name = _core.given_name(ob)
+    mesh = B.set_object_mesh(ob, bm)
+    B.set_mesh_name(mesh, _core.given_name(ob))
 
 
 # ---------------------------------------------------------------- booleans
@@ -461,7 +413,7 @@ def seat(host, part):
     from .joints import Kinematics
     root = part.root if isinstance(part, Handle) else part
     _solids("seat", host)
-    if not isinstance(root, bpy.types.Object):
+    if not B.is_object(root):
         raise TypeError(f"seat: the part is a solid, a group or an assembly, not {type(part).__name__}")
     if root == host:
         raise ValueError(f"seat: {_core.given_name(host)!r} is both the host and the part")
@@ -474,7 +426,7 @@ def seat(host, part):
     to_host = _core.world(host) @ k.rest_world(host).inverted()     # the part where it sits at rest, by the host
     tools = []
     for ob in meshes:
-        tool = _core.link(bpy.data.objects.new(_core.given_name(ob), ob.data.copy()))
+        tool = B.new_object(_core.given_name(ob), B.copy_mesh(ob.data))
         tool[_core.NAME] = _core.given_name(ob)
         tool.matrix_basis = _core.snapped(to_host @ k.rest_world(ob))
         tools.append(tool)
@@ -507,7 +459,7 @@ def box_tool(reach, below):
 
 
 def _bbox(ob):
-    vs = [v.co for v in ob.data.vertices]
+    vs = B.mesh_points(ob.data)
     lo = Vector((min(v.x for v in vs), min(v.y for v in vs), min(v.z for v in vs)))
     hi = Vector((max(v.x for v in vs), max(v.y for v in vs), max(v.z for v in vs)))
     return [Vector((x, y, z)) for x in (lo.x, hi.x) for y in (lo.y, hi.y) for z in (lo.z, hi.z)]
@@ -530,12 +482,12 @@ def split(ob, frame, keep="above"):
 def _solids(verb, *obs):
     """Refuse what is not a solid, saying what it is and what to do with it."""
     for ob in obs:
-        if isinstance(ob, bpy.types.Object) and ob.type == "MESH":
+        if B.is_object(ob) and ob.type == "MESH":
             continue
-        if isinstance(ob, bpy.types.Object) and ob.type == "EMPTY":
+        if B.is_object(ob) and ob.type == "EMPTY":
             raise TypeError(f"{verb}: {_core.given_name(ob)!r} is a group, not a solid: give its parts, or join them "
                             f"into one first")
-        if isinstance(ob, bpy.types.Object):
+        if B.is_object(ob):
             raise TypeError(f"{verb}: {_core.given_name(ob)!r} is a {ob.type.lower()} object, not a solid")
         if isinstance(ob, (Profile, Placed)):
             raise TypeError(f"{verb}: a profile is not a solid: extrude it first, s3d.extrude(name, profile, h)")
@@ -571,10 +523,7 @@ def delete(ob):
     if _guard.removed(ob):
         return
     _guard.deleting(ob)
-    mesh = ob.data if ob.type == "MESH" else None
-    bpy.data.objects.remove(ob)
-    if mesh is not None and mesh.users == 0:
-        bpy.data.meshes.remove(mesh)
+    B.remove_object(ob)
 
 
 # ---------------------------------------------------------------- holes and pockets
@@ -589,7 +538,7 @@ def _frames(ob, on):
         on = [on]
     elif on and isinstance(on[0], (int, float)):
         on = [on]
-    top = max((ob.matrix_basis @ v.co).z for v in ob.data.vertices) if any(
+    top = max((ob.matrix_basis @ co).z for co in B.mesh_points(ob.data)) if any(
         not isinstance(a, Frame) and len(a) == 2 for a in on) else 0.0
     frames = [a if isinstance(a, Frame) else Frame((a[0], a[1], top) if len(a) == 2 else tuple(a)) for a in on]
     tree = _core.mm_tree(ob, ob.matrix_basis)
@@ -617,7 +566,7 @@ def _entry(ob, tree, frame):
     if hit is None:
         return frame
     loc, _, index, _ = hit
-    normal, point = _plane(ob.data, [ob.data.polygons[index]], ob.matrix_basis)
+    normal, point = _plane(ob.data, [B.mesh_polygons(ob.data)[index]], ob.matrix_basis)
     along = sum(a * b for a, b in zip(normal, n)) if normal is not None else 0.0
     if abs(along) < 1e-9:                                   # a sliver: the hit itself will do
         return Frame(tuple(c / size for c in loc), n, frame.y)
@@ -715,8 +664,7 @@ def _names(edges):
 def _named_edges(ob, bm, edges):
     """The edges of `bm` carrying any of the names in `edges` ("all" or None: every named edge)."""
     names = _names(edges)
-    layers = {lay.name[len(_core.EDGE_TAG):]: lay for lay in bm.edges.layers.bool.values()
-              if lay.name.startswith(_core.EDGE_TAG)}
+    layers = _core.tag_layers(bm, "edges")
     if names is None:
         chosen = list(layers.values())
     else:
@@ -745,9 +693,8 @@ def _retag(bm, new_faces, kind, name):
     bm.faces.ensure_lookup_table()
     bm.normal_update()
     new = {f.index for f in new_faces if f.is_valid}
-    face_layers = {lay.name[len(_core.FACE_TAG):]: lay for lay in bm.faces.layers.bool.values()
-                   if lay.name.startswith(_core.FACE_TAG)}
-    edge_layers = [lay for lay in bm.edges.layers.bool.values() if lay.name.startswith(_core.EDGE_TAG)]
+    face_layers = _core.tag_layers(bm, "faces")
+    edge_layers = list(_core.tag_layers(bm, "edges").values())
     caps = {t: lay for t, lay in face_layers.items() if _is_cap(t)}
     for i in new:  # Blender copied one neighbour's names, picked by which way the edge runs
         for lay in face_layers.values():
@@ -782,8 +729,7 @@ def _bevel(ob, edges, offset, segments, kind, radius=False, verb=None):
     chosen edge is also bevelled in one operation, each at its own setback
     (`_bevel_weighted`), and that is kept if it is cleaner — fewer open edges, or as many
     and fewer slivers. A bevel that still leaves the solid more open than it was raises."""
-    bm = bmesh.new()
-    bm.from_mesh(ob.data)
+    bm = B.edit_mesh(ob.data)
     bm.normal_update()
     chosen = _named_edges(ob, bm, edges) if not callable(edges) else edges(bm)
     groups, picks = {}, []
@@ -800,8 +746,7 @@ def _bevel(ob, edges, offset, segments, kind, radius=False, verb=None):
     first = (_open_edges(result[0]), _slivers(result[0]))
     if first[0] <= before[0] and first[1] <= before[1]:
         return result
-    bm = bmesh.new()
-    bm.from_mesh(ob.data)
+    bm = B.edit_mesh(ob.data)
     again = _bevel_weighted(ob, bm, picks, segments, kind)
     if (_open_edges(again[0]), _slivers(again[0])) < first:
         result[0].free()
@@ -837,16 +782,14 @@ def _bevel_groups(ob, bm, groups, segments, kind):
     faces = []
     size = _core.in_mm(1.0)   # Blender's bevel has tolerances of its own, in its units: run it in millimetres
     if size != 1.0:
-        bmesh.ops.scale(bm, vec=(size, size, size), verts=bm.verts)
+        B.scale_mesh(bm, size)
     for setback in sorted(groups, reverse=True):
         geom = [e for e in groups[setback] if e.is_valid]
         if not geom or setback <= 0:
             continue
-        out = bmesh.ops.bevel(bm, geom=geom, offset=setback * size, offset_type="OFFSET", segments=segments,
-                              profile=0.5, affect="EDGES", clamp_overlap=True, loop_slide=True)
-        faces += out["faces"]
+        faces += B.bevel(bm, geom, setback * size, segments)
     if size != 1.0:
-        bmesh.ops.scale(bm, vec=(1 / size,) * 3, verts=bm.verts)
+        B.scale_mesh(bm, 1 / size)
     return _settle_bevel(ob, bm, faces, kind)
 
 
@@ -854,48 +797,11 @@ def _bevel_weighted(ob, bm, picks, segments, kind):
     """Bevel every picked edge [(index, setback)] of `bm` in one operation, each at
     its own setback, and weld and name what that made: (bm, the new faces). Frees `bm`.
 
-    `bmesh.ops.bevel` takes one offset; Blender's bevel modifier scales its width by an edge
-    weight, so every setback is the largest times its share. Its new faces are told apart by
-    the material index it gives them; a solid under construction has none of its own
-    (`materials.resolve` sets them at export)."""
+    `B.bevel` takes one offset; `B.bevel_weighted` one per edge (`materials.resolve` sets
+    the material slots at export, which Blender's way of telling the new faces apart uses)."""
     if not picks or max(s for _, s in picks) <= 0:
         return _settle_bevel(ob, bm, [], kind)
-    size = _core.in_mm(1.0)
-    top = max(s for _, s in picks)
-    me = bpy.data.meshes.new("_s3d_bevel")
-    bm.to_mesh(me)
-    bm.free()
-    if size != 1.0:
-        me.transform(Matrix.Scale(size, 4))
-    weight = me.attributes.new("s3d~weight", "FLOAT", "EDGE")
-    for i, s in picks:
-        weight.data[i].value = s / top
-    for p in me.polygons:
-        p.material_index = 0
-    me.materials.append(None)
-    me.materials.append(None)
-    temp = _core.link(bpy.data.objects.new("_s3d_bevel", me))
-    mod = temp.modifiers.new("bevel", "BEVEL")
-    mod.limit_method, mod.edge_weight, mod.affect = "WEIGHT", "s3d~weight", "EDGES"
-    mod.width, mod.offset_type, mod.segments, mod.profile = top * size, "OFFSET", segments, 0.5
-    mod.use_clamp_overlap, mod.loop_slide, mod.material = True, True, 1
-    depsgraph = bpy.context.evaluated_depsgraph_get()
-    result = bpy.data.meshes.new_from_object(temp.evaluated_get(depsgraph), preserve_all_data_layers=True,
-                                             depsgraph=depsgraph)
-    bpy.data.objects.remove(temp)
-    bpy.data.meshes.remove(me)
-    out = bmesh.new()
-    out.from_mesh(result)
-    bpy.data.meshes.remove(result)
-    if size != 1.0:
-        bmesh.ops.scale(out, vec=(1 / size,) * 3, verts=out.verts)
-    lay = out.edges.layers.float.get("s3d~weight")
-    if lay is not None:
-        out.edges.layers.float.remove(lay)
-    out.faces.ensure_lookup_table()
-    faces = [f for f in out.faces if f.material_index == 1]
-    for f in out.faces:
-        f.material_index = 0
+    out, faces = B.bevel_weighted(bm, picks, segments, _core.in_mm(1.0))
     return _settle_bevel(ob, out, faces, kind)
 
 
@@ -903,16 +809,16 @@ def _settle_bevel(ob, bm, faces, kind):
     """Weld what a bevel made on `bm` — `faces`, the new ones — and name it: (bm, the new faces)."""
     bm.faces.index_update()
     made = {f.index for f in faces if f.is_valid}
-    mark = bm.faces.layers.int.new("s3d~bevel")   # a new layer drops every Python reference: by index
+    mark = B.new_layer(bm, "faces", "int", "s3d~bevel")   # a new layer drops every Python reference: by index
     bm.faces.ensure_lookup_table()
     for i in made:
         bm.faces[i][mark] = 1
     _sort_mesh(bm)   # the welds below collapse in the order they are given, which bevel leaves to the run
-    bmesh.ops.remove_doubles(bm, verts=bm.verts, dist=_core.mm(WELD))   # a bevel clamped to nothing leaves
-    bmesh.ops.dissolve_degenerate(bm, dist=_core.mm(WELD), edges=bm.edges)  # zero-width strips: weld them away
+    B.weld(bm, _core.mm(WELD))                    # a bevel clamped to nothing leaves
+    B.dissolve_degenerate(bm, _core.mm(WELD))     # zero-width strips: weld them away
     bm.faces.index_update()
     made = [f.index for f in bm.faces if f[mark]]
-    bm.faces.layers.int.remove(mark)              # and so does removing it: by index again
+    B.remove_layer(bm, "faces", "int", "s3d~bevel")   # and so does removing it: by index again
     bm.faces.ensure_lookup_table()
     new = _retag(bm, [bm.faces[i] for i in made], kind, _core.given_name(ob))
     bm.faces.ensure_lookup_table()
@@ -940,13 +846,7 @@ def _sort_mesh(bm):
     """Vertices by position, edges and faces by their vertices: bevel and the boolean modifier
     make them in an order that changes with the run or the machine's thread count. Only
     where nothing holds an element: sorting moves them."""
-    def by(seq, key):
-        rank = {x: i for i, x in enumerate(sorted(seq, key=key))}
-        seq.sort(key=rank.__getitem__)
-        seq.index_update()
-    by(bm.verts, lambda v: tuple(v.co))
-    by(bm.edges, lambda e: sorted(v.index for v in e.verts))
-    by(bm.faces, lambda f: [v.index for v in f.verts])
+    B.sort_mesh(bm)
 
 
 def fillet(ob, r, edges="all"):
@@ -987,8 +887,7 @@ def _stretch(bm, strip, base, d, d2):
     """Move the rails of an equal chamfer cut `base` deep: the one on the face the edge
     is named after to `d` off the edge it replaced, the other to `d2` — each within its
     own face, square to the rail, away from the edge."""
-    caps = [lay for lay in bm.faces.layers.bool.values()
-            if lay.name.startswith(_core.FACE_TAG) and _is_cap(lay.name[len(_core.FACE_TAG):])]
+    caps = [lay for t, lay in _core.tag_layers(bm, "faces").items() if _is_cap(t)]
     strip = [f for f in strip if f.is_valid and len(f.verts) == 4]
     chamfer_faces = set(strip)
     bm.normal_update()
@@ -1043,11 +942,11 @@ def soften(ob, r, angle=30):
 # ---------------------------------------------------------------- shell
 
 def _named_faces(ob, names):
-    layers = {a.name[len(_core.FACE_TAG):]: a for a in ob.data.attributes if a.name.startswith(_core.FACE_TAG)}
+    layers = {a[len(_core.FACE_TAG):]: a for a in B.mesh_attributes(ob.data) if a.startswith(_core.FACE_TAG)}
     missing = [n for n in names if n not in layers]
     if missing:
         raise ValueError(_core.unknown(_core.given_name(ob), "face", missing, sorted(layers)))
-    return {i for n in names for i, d in enumerate(layers[n].data) if d.value}
+    return {i for n in names for i, d in enumerate(B.mesh_attribute_values(ob.data, layers[n])) if d}
 
 
 #: How a curved side is opened, said by `shell` when it is asked to open one by direction.
@@ -1065,8 +964,7 @@ def _facets(ob, picked):
     """Whether the faces `picked` of `ob` (indices, flat, looking one way) are facets of a curved
     side rather than a face: they run on into the faces round them without a crease
     (`CREASE`), and are not much larger than those (`FACE_SPAN`)."""
-    bm = bmesh.new()
-    bm.from_mesh(ob.data)
+    bm = B.edit_mesh(ob.data)
     bm.faces.ensure_lookup_table()
     limit = math.radians(CREASE)
     smooth = set()
@@ -1107,21 +1005,20 @@ def shell(ob, t, open=None):
                              f"named opens by its name (open=\"top\"); {CUT_FLAT}")
         opened |= {p.index for p in found}
     me = ob.data
-    normals = [p.normal.copy() for p in me.polygons]
-    planes = {v.index: [] for v in me.vertices}
-    for p in me.polygons:
+    polys = B.mesh_polygons(me)
+    points = B.mesh_points(me)
+    normals = [p.normal.copy() for p in polys]
+    planes = {i: [] for i in range(len(points))}
+    for p in polys:
         for v in p.vertices:
             planes[v].append((normals[p.index], 1.0 if p.index in opened else -1.0))
-    inner = bmesh.new()
+    inner = B.edit_mesh()
     bverts = []
-    for v in me.vertices:
-        bverts.append(inner.verts.new(v.co + _offset(planes[v.index], t)))
-    for p in me.polygons:
+    for i, co in enumerate(points):
+        bverts.append(inner.verts.new(co + _offset(planes[i], t)))
+    for p in polys:
         inner.faces.new([bverts[i] for i in p.vertices])
-    tool_mesh = bpy.data.meshes.new("shell")
-    inner.to_mesh(tool_mesh)
-    inner.free()
-    tool = _core.link(bpy.data.objects.new("shell", tool_mesh))
+    tool = B.mesh_object("shell", inner, recalc=False)
     tool[_core.NAME] = "shell"
     tool.matrix_basis, tool.parent = ob.matrix_basis, ob.parent
     return _boolean(ob, [tool], "DIFFERENCE", strip=True, self_intersect=True, verb="shell")
@@ -1217,17 +1114,15 @@ def _copy(ob, children=None):
 def _twin(ob):
     """A new object like `ob` — placement, custom properties, its own copy of the mesh —
     in the scene, under the same parent."""
-    twin = ob.copy()                   # Blender shares the mesh: copy it
-    if ob.data is not None:
-        twin.data = ob.data.copy()
+    twin = B.copy_object(ob)
     twin[_core.NAME] = _core.given_name(ob)   # a group has none; the copy's own name is suffixed
-    return _core.link(twin)
+    return twin
 
 
 def _children():
     """{parent: [children]} over the scene, in one pass."""
     out = {}
-    for o in bpy.data.objects:
+    for o in B.objects():
         if o.parent is not None:
             out.setdefault(o.parent, []).append(o)
     return out
@@ -1256,7 +1151,7 @@ def _ids(value, seen=None):
     if id(value) in seen:
         return []
     seen.add(id(value))
-    if isinstance(value, bpy.types.ID):
+    if B.is_data(value):
         return [value]
     if isinstance(value, dict):
         items = list(value.values())
@@ -1297,20 +1192,19 @@ def _concat(meshes):
     for me, m in meshes:
         flip = m.to_3x3().determinant() < 0
         base = len(verts)
-        verts += [m @ v.co for v in me.vertices]
-        fl = {a.name: [d.value for d in a.data] for a in me.attributes
-              if a.name.startswith(_core.FACE_TAG)}
-        el = {a.name: [d.value for d in a.data] for a in me.attributes
-              if a.name.startswith(_core.EDGE_TAG)}
-        for i, p in enumerate(me.polygons):
-            vs = [base + v for v in p.vertices]
+        verts += [m @ co for co in B.mesh_points(me)]
+        names = B.mesh_attributes(me)
+        fl = {a: B.mesh_attribute_values(me, a) for a in names if a.startswith(_core.FACE_TAG)}
+        el = {a: B.mesh_attribute_values(me, a) for a in names if a.startswith(_core.EDGE_TAG)}
+        for i, p in enumerate(B.mesh_faces(me)):
+            vs = [base + v for v in p]
             faces.append(vs[::-1] if flip else vs)
             face_tags.append({n[len(_core.FACE_TAG):] for n, vals in fl.items() if vals[i]})
-        for i, e in enumerate(me.edges):
+        for i, e in enumerate(B.mesh_edges(me)):
             tags = {n[len(_core.EDGE_TAG):] for n, vals in el.items() if vals[i]}
             if tags:
-                edge_keys.append((frozenset((base + e.vertices[0], base + e.vertices[1])), tags))
-    bm = bmesh.new()
+                edge_keys.append((frozenset((base + e[0], base + e[1])), tags))
+    bm = B.edit_mesh()
     bv = [bm.verts.new(v) for v in verts]
     for f in faces:
         bm.faces.new([bv[i] for i in f])
@@ -1328,9 +1222,9 @@ def scale(ob, s):
     `ob`'s mesh scaled about its own origin: one factor, or (sx, sy, sz)."""
     _solids("scale", ob)
     sx, sy, sz = (s, s, s) if isinstance(s, (int, float)) else s
-    ob.data.transform(Matrix.Diagonal((sx, sy, sz, 1)))
+    B.transform_mesh(ob.data, Matrix.Diagonal((sx, sy, sz, 1)))
     if sx * sy * sz < 0:
-        ob.data.flip_normals()
+        B.flip_mesh_normals(ob.data)
     return ob
 
 
@@ -1343,8 +1237,7 @@ def dent(ob, points, r, depth):
     at its centre — how upholstery is buttoned."""
     _solids("dent", ob)
     centres = [Vector(p.origin if isinstance(p, Frame) else p) for p in points]
-    bm = bmesh.new()
-    bm.from_mesh(ob.data)
+    bm = B.edit_mesh(ob.data)
     for c in centres:
         _densify(bm, c, r)
     bm.normal_update()
@@ -1360,7 +1253,7 @@ def dent(ob, points, r, depth):
     for index, push in moves.items():
         v = bm.verts[index]
         v.co -= v.normal * push
-    bm.to_mesh(ob.data)
+    B.write_mesh(bm, ob.data)
     bm.free()
     return ob
 
@@ -1372,7 +1265,7 @@ def _densify(bm, c, r, cuts=4):
     if any((v.co - c).length < r / cuts for v in bm.verts):
         return
     bm.faces.ensure_lookup_table()
-    tree = BVHTree.FromBMesh(bm)
+    tree = B.bvh(bm)
     near = tree.find_nearest_range(c, r)
     if not near:
         return
@@ -1381,7 +1274,6 @@ def _densify(bm, c, r, cuts=4):
     for axis in (u, n.cross(u).normalized()):
         for k in range(-cuts + 1, cuts):
             faces = {bm.faces[hit[2]] for hit in near}
-            geom = list(faces) + list({e for f in faces for e in f.edges}) + list({v for f in faces for v in f.verts})
-            bmesh.ops.bisect_plane(bm, geom=geom, dist=_core.mm(WELD), plane_co=c + axis * (k * r / cuts), plane_no=axis)
+            B.bisect(bm, faces, c + axis * (k * r / cuts), axis, _core.mm(WELD))
             bm.faces.ensure_lookup_table()
-            near = BVHTree.FromBMesh(bm).find_nearest_range(c, r)
+            near = B.bvh(bm).find_nearest_range(c, r)

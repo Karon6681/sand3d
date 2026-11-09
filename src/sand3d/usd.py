@@ -33,6 +33,7 @@ import os
 import re
 
 from . import _core, materials
+from ._backend import B
 from .urdf import Mechanism, _clean, _d, _det3, _inv, _metres, _mul, _num
 
 _I3 = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]
@@ -130,25 +131,21 @@ def _mesh(out, name, ob, m, unit, look):
     me = ob.data
     det = _det3(m)
     rows = [[m[r][c] * unit for c in range(4)] for r in range(3)]
-    co = [0.0] * (3 * len(me.vertices))
-    me.vertices.foreach_get("co", co)
+    co = B.mesh_coords(me)
     points = [[r[0] * co[i] + r[1] * co[i + 1] + r[2] * co[i + 2] + r[3] for r in rows] for i in range(0, len(co), 3)]
     a = [row[:3] for row in m[:3]]
     carry = [[(a[(r + 1) % 3][(c + 1) % 3] * a[(r + 2) % 3][(c + 2) % 3]
                - a[(r + 1) % 3][(c + 2) % 3] * a[(r + 2) % 3][(c + 1) % 3]) / det for c in range(3)]
              for r in range(3)]                           # (M⁻¹)ᵀ: what carries a normal
-    corner = [0.0] * (3 * len(me.loops))
-    me.corner_normals.foreach_get("vector", corner)
-    me.calc_loop_triangles()                  # Blender's triangles: a concave face fanned by a reader is wrong
+    triangles = B.mesh_triangles(me, normals=True)   # the backend's: a concave face fanned by a reader is wrong
     indices, normals = [], []
-    for t in me.loop_triangles:
-        vs, ls = list(t.vertices), list(t.loops)
+    for vs, ns in triangles:
         if det < 0:                                       # a mirror image: the winding turns over
             vs.reverse()
-            ls.reverse()
+            ns.reverse()
         indices += vs
-        for l in ls:
-            n = [sum(carry[r][c] * corner[3 * l + c] for c in range(3)) for r in range(3)]
+        for corner in ns:
+            n = [sum(carry[r][c] * corner[c] for c in range(3)) for r in range(3)]
             size = math.sqrt(sum(v * v for v in n)) or 1.0
             normals.append([v / size for v in n])
     out.open(f'def Mesh "{name}"', ["MaterialBindingAPI"] if look else ())
@@ -156,7 +153,7 @@ def _mesh(out, name, ob, m, unit, look):
     if points:
         low, high = ([f(p[i] for p in points) for i in range(3)] for f in (min, max))
         out(f"float3[] extent = {_array([low, high])}")
-    out(f"int[] faceVertexCounts = [{', '.join(['3'] * len(me.loop_triangles))}]")
+    out(f"int[] faceVertexCounts = [{', '.join(['3'] * len(triangles))}]")
     out(f"int[] faceVertexIndices = [{', '.join(map(str, indices))}]")
     if look:
         out(f"rel material:binding = <{look}>")

@@ -10,6 +10,7 @@ import os
 import struct
 
 from . import _core
+from ._backend import B
 from .urdf import _metres, _num
 
 
@@ -31,14 +32,12 @@ def _triangles(ob, y_up):
     rows = [[m[r][c] * unit for c in range(4)] for r in range(3)]
     flip = m.to_3x3().determinant() < 0          # a mirror image: its triangles turn the other way
     me = ob.data
-    co = [0.0] * (3 * len(me.vertices))
-    me.vertices.foreach_get("co", co)
+    co = B.mesh_coords(me)
     verts = []
     for i in range(0, len(co), 3):
         x, y, z = (r[0] * co[i] + r[1] * co[i + 1] + r[2] * co[i + 2] + r[3] for r in rows)
         verts.append((x, z, -y) if y_up else (x, y, z))
-    me.calc_loop_triangles()
-    tris = [tuple(reversed(t.vertices)) if flip else tuple(t.vertices) for t in me.loop_triangles]
+    tris = [tuple(reversed(t)) if flip else tuple(t) for t in B.mesh_triangles(me)]
     return verts, tris
 
 

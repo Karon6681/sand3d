@@ -17,9 +17,8 @@ sets none never runs it, and builds and exports exactly as before.
 import difflib
 import json
 
-import bpy
-
 from . import _core
+from ._backend import B
 
 #: Custom property holding an object's tag, and a material's look.
 TAG = "s3d_material"
@@ -85,7 +84,7 @@ def material(ob, kind, color=None, roughness=None, metallic=None, opacity=None, 
     tag = json.dumps({"kind": kind, **{k: v for k, v in given.items() if v is not None}}, sort_keys=True)
     targets = [t.root if isinstance(t, Handle) else t for t in _flat([ob])]
     for target in targets:                  # all checked before any is tagged
-        if not isinstance(target, bpy.types.Object):
+        if not B.is_object(target):
             raise TypeError(f"material: {target!r} is not a part, a group or an assembly — a profile or a path "
                             "becomes one through extrude, revolve, sweep or loft")
     for target in targets:
@@ -129,26 +128,12 @@ def _name(tag):
 
 
 def _material(tag, made):
-    """The Blender material of a tag: one per distinct tag, made once."""
+    """The backend's material of a tag: one per distinct tag, made once."""
     if tag in made:
         return made[tag]
     v = look(tag)
-    mat = bpy.data.materials.new(_name(tag))
+    mat = B.new_material(_name(tag), _linear(v["color"]), v)
     mat[TAG] = tag
-    mat.use_nodes = True
-    bsdf = mat.node_tree.nodes["Principled BSDF"]
-    rgba = _linear(v["color"])
-    for socket, value in (("Base Color", rgba), ("Roughness", v["roughness"]), ("Metallic", v["metallic"]),
-                          ("Alpha", v["opacity"]), ("Transmission Weight", v["transmission"]),
-                          ("Coat Weight", v["coat"]), ("Sheen Weight", v["sheen"]),
-                          ("Emission Color", rgba), ("Emission Strength", v["emission"])):
-        bsdf.inputs[socket].default_value = value
-    if v["coat"]:
-        bsdf.inputs["Coat Roughness"].default_value = 0.05
-    if v["opacity"] < 1:
-        mat.surface_render_method = "BLENDED"
-    mat.diffuse_color = (*rgba[:3], v["opacity"])       # what Workbench and the viewport show
-    mat.metallic, mat.roughness = v["metallic"], v["roughness"]
     made[tag] = mat
     return mat
 
@@ -166,25 +151,24 @@ def resolve():
     a mesh that has none any more. Nothing to do in a program that sets no material."""
     if not _core.dressed:
         return
-    made = {m[TAG]: m for m in bpy.data.materials if TAG in m}
-    for ob in sorted(bpy.data.objects, key=lambda o: o.name):
+    made = {m[TAG]: m for m in B.materials() if TAG in m}
+    for ob in sorted(B.objects(), key=lambda o: o.name):
         if ob.type != "MESH":
             continue
         tag = _nearest(ob)
-        have = list(ob.data.materials)
+        have = B.mesh_materials(ob.data)
         if tag is None:
             if any(m is not None and TAG in m for m in have):
-                ob.data.materials.clear()
+                B.set_mesh_materials(ob.data, [])
             continue
         want = _material(tag, made)
         if have != [want]:
-            ob.data.materials.clear()
-            ob.data.materials.append(want)
-        if any(p.material_index for p in ob.data.polygons):
-            ob.data.polygons.foreach_set("material_index", [0] * len(ob.data.polygons))
+            B.set_mesh_materials(ob.data, [want])
+        B.zero_material_indices(ob.data)
 
 
 def dressed():
     """Whether any mesh of the scene wears one of our materials."""
-    return _core.dressed and any(ob.type == "MESH" and any(m is not None and TAG in m for m in ob.data.materials)
-                                 for ob in bpy.data.objects)
+    return _core.dressed and any(ob.type == "MESH" and any(m is not None and TAG in m
+                                                           for m in B.mesh_materials(ob.data))
+                                 for ob in B.objects())

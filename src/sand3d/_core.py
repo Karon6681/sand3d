@@ -5,9 +5,9 @@ selection; the scene collection is the only context a verb touches.
 """
 import math
 
-import bpy  # before bmesh, which the bpy module only provides once loaded
-import bmesh
-from mathutils import Matrix, Vector, geometry
+from ._backend import B
+
+Matrix, Vector = B.Matrix, B.Vector
 
 
 #: Custom property holding the name a program gave an object (Blender may suffix ob.name).
@@ -53,8 +53,7 @@ def triangulate(points, edges, output_type, eps):
     float noise, and a program in another unit must meet the same noise. The output
     points come back in the program's unit."""
     size = in_mm(1.0)
-    out = geometry.delaunay_2d_cdt([Vector((p[0] * size, p[1] * size)) for p in points], edges, [],
-                                   output_type, eps)
+    out = B.delaunay_2d_cdt([Vector((p[0] * size, p[1] * size)) for p in points], edges, output_type, eps)
     return ([Vector((v.x / size, v.y / size)) for v in out[0]], *out[1:])
 
 
@@ -111,26 +110,11 @@ def unknown(owner, kind, missing, known):
 def mm_tree(ob, matrix):
     """A BVH of `ob`'s mesh placed by `matrix`, in millimetres: Blender's BVH pads its boxes
     in its own units, which breaks ties — search it with points times `in_mm(1.0)`."""
-    from mathutils.bvhtree import BVHTree
-    size = in_mm(1.0)
-    bm = bmesh.new()
-    bm.from_mesh(ob.data)
-    bm.transform(matrix)
-    if size != 1.0:
-        bmesh.ops.scale(bm, vec=(size,) * 3, verts=bm.verts)
-    tree = BVHTree.FromBMesh(bm)
-    bm.free()
-    return tree
+    return B.bvh_of_mesh(ob.data, matrix, in_mm(1.0))
 
 
 def given_name(ob):
     return ob.get(NAME, ob.name)
-
-
-def link(ob):
-    """Put `ob` in the scene, where the exporter and the depsgraph see it."""
-    bpy.context.scene.collection.objects.link(ob)
-    return ob
 
 
 #: Face tags that name a cap. An edge bounding such a face carries its name;
@@ -160,9 +144,9 @@ class Builder:
 
     def __init__(self, name):
         self.name = name
-        self.bm = bmesh.new()
-        self.surface = self.bm.faces.layers.int.new(SURFACE)
-        self.layers = {t: self.bm.faces.layers.bool.new(FACE_TAG + t) for t in self.TAGS}
+        self.bm = B.edit_mesh()
+        self.surface = B.new_layer(self.bm, "faces", "int", SURFACE)
+        self.layers = {t: B.new_layer(self.bm, "faces", "bool", FACE_TAG + t) for t in self.TAGS}
 
     def vert(self, co):
         return self.bm.verts.new(co)
@@ -189,7 +173,7 @@ class Builder:
                  and all(f in faces for f in e.link_faces)
                  and e.link_faces[0][self.surface] == e.link_faces[1][self.surface]]
         if inner:
-            bmesh.ops.dissolve_edges(self.bm, edges=inner, use_verts=False, use_face_split=False)
+            B.dissolve_edges(self.bm, inner)
 
     def finish(self, kind, rim=False):
         """The object. `rim`: every real edge also takes `kind`, save those bounding a
@@ -210,14 +194,10 @@ class Builder:
                 tags.add(kind)
             edge_tags.append(tags)
         for t in self.TAGS:  # by name each time: removing a layer invalidates the other handles
-            bm.faces.layers.bool.remove(bm.faces.layers.bool[FACE_TAG + t])
-        bm.faces.layers.int.remove(bm.faces.layers.int[SURFACE])
+            B.remove_layer(bm, "faces", "bool", FACE_TAG + t)
+        B.remove_layer(bm, "faces", "int", SURFACE)
         write_tags(bm, name, face_tags, edge_tags)
-        bmesh.ops.recalc_face_normals(bm, faces=bm.faces)
-        mesh = bpy.data.meshes.new(name)
-        bm.to_mesh(mesh)
-        bm.free()
-        ob = link(bpy.data.objects.new(name, mesh))
+        ob = B.mesh_object(name, bm)
         ob[NAME] = name
         return ob
 
@@ -231,15 +211,13 @@ def write_tags(bm, name, face_tags, edge_tags):
     face_tags = [qualified(t) for t in face_tags]
     edge_tags = [None if t is None else qualified(t) for t in edge_tags]
     for t in sorted({t for tags in face_tags for t in tags}):
-        if bm.faces.layers.bool.get(FACE_TAG + t) is None:
-            bm.faces.layers.bool.new(FACE_TAG + t)
+        if B.layer(bm, "faces", "bool", FACE_TAG + t) is None:
+            B.new_layer(bm, "faces", "bool", FACE_TAG + t)
     for t in sorted({t for tags in edge_tags if tags for t in tags}):
-        if bm.edges.layers.bool.get(EDGE_TAG + t) is None:
-            bm.edges.layers.bool.new(EDGE_TAG + t)
-    flayers = {lay.name[len(FACE_TAG):]: lay for lay in bm.faces.layers.bool.values()
-               if lay.name.startswith(FACE_TAG)}
-    elayers = {lay.name[len(EDGE_TAG):]: lay for lay in bm.edges.layers.bool.values()
-               if lay.name.startswith(EDGE_TAG)}
+        if B.layer(bm, "edges", "bool", EDGE_TAG + t) is None:
+            B.new_layer(bm, "edges", "bool", EDGE_TAG + t)
+    flayers = tag_layers(bm, "faces")
+    elayers = tag_layers(bm, "edges")
     for f, tags in zip(bm.faces, face_tags):
         for t in tags:
             f[flayers[t]] = True
@@ -250,18 +228,20 @@ def write_tags(bm, name, face_tags, edge_tags):
         e.smooth = tags is None
 
 
+def tag_layers(bm, domain):
+    """{tag: layer} of the provenance tags of `bm` on "faces" or "edges", in the order made."""
+    prefix = FACE_TAG if domain == "faces" else EDGE_TAG
+    return {n[len(prefix):]: lay for n, lay in B.layers(bm, domain, "bool").items() if n.startswith(prefix)}
+
+
 def new_object(name, bm):
     """A mesh object named `name` from `bm`, its normals pointing out. Frees `bm`."""
-    bmesh.ops.recalc_face_normals(bm, faces=bm.faces)
-    mesh = bpy.data.meshes.new(name)
-    bm.to_mesh(mesh)
-    bm.free()
-    return link(bpy.data.objects.new(name, mesh))
+    return B.mesh_object(name, bm)
 
 
 def extent(ob, axis):
     """The size of `ob`'s own mesh along an axis (0, 1, 2), before any placement."""
-    values = [v.co[axis] for v in ob.data.vertices]
+    values = [v[axis] for v in B.mesh_points(ob.data)]
     return max(values) - min(values)
 
 
@@ -300,20 +280,20 @@ def add_tags(bm, face_add, edge_add):
     """Add names to elements of `bm` by index: {face index: tags}, {edge index: tags}.
     Edges that gain a name become sharp."""
     for t in sorted({t for tags in face_add.values() for t in tags}):
-        if bm.faces.layers.bool.get(FACE_TAG + t) is None:
-            bm.faces.layers.bool.new(FACE_TAG + t)
+        if B.layer(bm, "faces", "bool", FACE_TAG + t) is None:
+            B.new_layer(bm, "faces", "bool", FACE_TAG + t)
     for t in sorted({t for tags in edge_add.values() for t in tags}):
-        if bm.edges.layers.bool.get(EDGE_TAG + t) is None:
-            bm.edges.layers.bool.new(EDGE_TAG + t)
+        if B.layer(bm, "edges", "bool", EDGE_TAG + t) is None:
+            B.new_layer(bm, "edges", "bool", EDGE_TAG + t)
     bm.faces.ensure_lookup_table()
     bm.edges.ensure_lookup_table()
     for i, tags in face_add.items():
         f = bm.faces[i]
         for t in tags:
-            f[bm.faces.layers.bool[FACE_TAG + t]] = True
+            f[B.layer(bm, "faces", "bool", FACE_TAG + t)] = True
     for i, tags in edge_add.items():
         e = bm.edges[i]
         for t in tags:
-            e[bm.edges.layers.bool[EDGE_TAG + t]] = True
+            e[B.layer(bm, "edges", "bool", EDGE_TAG + t)] = True
         e.smooth = False
     bm.normal_update()

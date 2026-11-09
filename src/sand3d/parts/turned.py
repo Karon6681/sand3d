@@ -2,6 +2,7 @@
 import math
 
 from .. import _core
+from .._backend import B
 from ..solids import _cap, _object
 
 
@@ -29,7 +30,7 @@ def _lathe(name, radius, h, around, along):
     flat = [(v.co.x, v.co.y) for v in rings[-1]]
     caps += [b.face([rings[-1][i] for i in t], -2, ("top",)) for t in _cap(flat)]
     b.dissolve(caps)
-    return _object(b, __import__("mathutils").Matrix.Identity(4), "side")
+    return _object(b, B.Matrix.Identity(4), "side")
 
 
 def _triangle(f):

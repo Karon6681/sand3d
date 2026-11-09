@@ -12,17 +12,14 @@ A frame read on a part — `ob.face`, `bbox`, an assembly's anchor — remembers
 (`part`) and where the part stood when it was read, through `.move`, `.turn` and
 `.offset`: a joint takes its pivot from it, wherever the part has gone since.
 """
-import atexit
 import math
 import re
 
-import bpy
-import bmesh
-from mathutils import Euler, Matrix, Vector
-from mathutils.bvhtree import BVHTree
-
 from . import _core
+from ._backend import B
 from .profile import Path, Placed, Profile, _as_path
+
+Euler, Matrix, Vector = B.Euler, B.Matrix, B.Vector
 
 
 def _clean(v):
@@ -182,18 +179,18 @@ def face(ob, which):
     of the face furthest that way. Its origin is the parent's origin projected onto
     the face's plane, as CadQuery places a workplane."""
     me = ob.data
-    polys = list(me.polygons)
+    polys = B.mesh_polygons(me)
     d = _DIRECTION.match(which)
     if d:
         chosen = _facing(ob, which)
         if not chosen:
             raise ValueError(f"{_core.given_name(ob)} has no face facing {which}")
     else:
-        att = me.attributes.get(_core.FACE_TAG + which)
-        if att is None:
-            names = sorted(a.name[len(_core.FACE_TAG):] for a in me.attributes if a.name.startswith(_core.FACE_TAG))
+        attributes = B.mesh_attributes(me)
+        if _core.FACE_TAG + which not in attributes:
+            names = sorted(a[len(_core.FACE_TAG):] for a in attributes if a.startswith(_core.FACE_TAG))
             raise ValueError(_core.unknown(_core.given_name(ob), "face", [which], names))
-        tagged = [p for p, v in zip(polys, att.data) if v.value]
+        tagged = [p for p, v in zip(polys, B.mesh_attribute_values(me, _core.FACE_TAG + which)) if v]
         groups = {}
         for p in tagged:
             n = p.normal
@@ -223,7 +220,7 @@ def _facing(ob, which):
         axis = -axis
     rot = ob.matrix_basis.to_3x3()
     local = (rot.inverted() @ axis).normalized()
-    chosen = [p for p in ob.data.polygons if p.normal.dot(local) > math.cos(math.radians(1))]
+    chosen = [p for p in B.mesh_polygons(ob.data) if p.normal.dot(local) > math.cos(math.radians(1))]
     if not chosen:
         return []
     far = max(p.center.dot(local) for p in chosen)
@@ -239,8 +236,9 @@ def _plane(me, polys, m):
     The normal is Newell's over every face (so weighted by area), the point the mean of
     their corners."""
     pts, n = [], [0.0, 0.0, 0.0]
+    points = B.mesh_points(me)
     for poly in polys:
-        corners = [tuple(me.vertices[i].co) for i in poly.vertices]
+        corners = [tuple(points[i]) for i in poly.vertices]
         for (x0, y0, z0), (x1, y1, z1) in zip(corners, corners[1:] + corners[:1]):
             n[0] += (y0 - y1) * (z0 + z1)
             n[1] += (z0 - z1) * (x0 + x1)
@@ -275,14 +273,15 @@ def edge(ob, which):
     crosses its own +X (+Z, +Y); an open one runs toward +X (then +Y, +Z). Edges that fork
     raise: a path follows a line, not a junction."""
     me = ob.data
-    att = me.attributes.get(_core.EDGE_TAG + which) if isinstance(which, str) else None
-    if att is None or att.domain != "EDGE":
-        names = sorted(a.name[len(_core.EDGE_TAG):] for a in me.attributes if a.name.startswith(_core.EDGE_TAG))
+    attributes = B.mesh_attributes(me)
+    domain = attributes.get(_core.EDGE_TAG + which) if isinstance(which, str) else None
+    if domain != "EDGE":
+        names = sorted(a[len(_core.EDGE_TAG):] for a in attributes if a.startswith(_core.EDGE_TAG))
         raise ValueError(_core.unknown(_core.given_name(ob), "edge", [str(which)], names))
     links = {}
-    for e, flag in zip(me.edges, att.data):
-        if flag.value:
-            a, b = e.vertices
+    for e, flag in zip(B.mesh_edges(me), B.mesh_attribute_values(me, _core.EDGE_TAG + which)):
+        if flag:
+            a, b = e
             links.setdefault(a, []).append(b)
             links.setdefault(b, []).append(a)
     if not links:
@@ -292,7 +291,8 @@ def edge(ob, which):
         raise ValueError(f"{_core.given_name(ob)}: the edges named {which!r} fork at {len(forks)} point(s) — a path "
                          f"follows a line, not a junction: name one loop or one run (a single cut's)")
     m = ob.matrix_basis
-    co = {v: m @ me.vertices[v].co for v in links}
+    points = B.mesh_points(me)
+    co = {v: m @ points[v] for v in links}
     runs, seen = [], set()
     for start in sorted(links, key=lambda v: (len(links[v]) != 1, v)):   # open runs from an end
         if start in seen:
@@ -369,8 +369,7 @@ def _placed_points(ob):
     def walk(o, m):
         if o.type == "MESH":
             rows = [[m[r][c] for c in range(4)] for r in range(3)]
-            co = [0.0] * (3 * len(o.data.vertices))
-            o.data.vertices.foreach_get("co", co)
+            co = B.mesh_coords(o.data)
             for i in range(0, len(co), 3):
                 x, y, z = co[i], co[i + 1], co[i + 2]
                 out.append(tuple(r[0] * x + r[1] * y + r[2] * z + r[3] for r in rows))
@@ -390,7 +389,7 @@ def bbox(ob, which):
     first way named — its normal that way — and is read on `ob`, as `ob.face` is."""
     from .assembly import Handle
     root = ob.root if isinstance(ob, Handle) else ob
-    if not isinstance(root, bpy.types.Object):
+    if not B.is_object(root):
         raise TypeError(f"bbox: a part, a group or an assembly is expected, not {type(ob).__name__}")
     sides = _sides(which, "bbox")
     pts = _placed_points(root)
@@ -416,7 +415,7 @@ def local(ob, x=0, y=0, z=0, rx=0, ry=0, rz=0):
     and a joint on it takes its pivot from it, wherever `ob` has gone since."""
     from .assembly import Handle
     root = ob.root if isinstance(ob, Handle) else ob
-    if not isinstance(root, bpy.types.Object):
+    if not B.is_object(root):
         raise TypeError(f"local: a part, a group or an assembly is expected, not {type(ob).__name__}: the frame is "
                         f"read on it, at a point of its own space")
     values = dict(zip(KEYS, (x, y, z, rx, ry, rz)))
@@ -434,13 +433,8 @@ def _frame_only(method):
     return refuse
 
 
-bpy.types.Object.face = face
-bpy.types.Object.edge = edge
-for _method in ("move", "turn", "offset"):
-    setattr(bpy.types.Object, _method, _frame_only(_method))
-# bpy 4.5 never exits while a Python attribute sits on an RNA type: take them off first.
-atexit.register(lambda: [delattr(bpy.types.Object, a) for a in ("face", "edge", "move", "turn", "offset")
-                         if hasattr(bpy.types.Object, a)])
+B.install_object_methods({"face": face, "edge": edge,
+                          **{_method: _frame_only(_method) for _method in ("move", "turn", "offset")}})
 
 
 # ---------------------------------------------------------------- placing
@@ -476,7 +470,7 @@ def _bounds(ob):
 
     def walk(o, m):
         if o.type == "MESH":
-            pts.extend(m @ v.co for v in o.data.vertices)
+            pts.extend(m @ co for co in B.mesh_points(o.data))
         for c in o.children:
             walk(c, m @ c.matrix_parent_inverse @ c.matrix_basis)
     walk(ob, Matrix.Identity(4))
@@ -522,7 +516,7 @@ def _elements(ob):
             if inner is None:
                 return None
             out += inner
-        elif isinstance(item, (bpy.types.Object, Handle, Profile, Placed, Path)):
+        elif B.is_object(item) or isinstance(item, (Handle, Profile, Placed, Path)):
             out.append(item)
         else:
             return None
@@ -557,7 +551,7 @@ def at(ob, x=None, y=None, z=None, rx=None, ry=None, rz=None, on=None, anchor=No
         raise TypeError(f"at: on is a frame or a list of frames, as grid(), ring() and along() give, not {on!r}")
     items = _elements(ob)
     if items is not None:
-        if anchor is not None and any(isinstance(i, (bpy.types.Object, Handle)) for i in items):
+        if anchor is not None and any(B.is_object(i) or isinstance(i, Handle) for i in items):
             raise ValueError("at: anchor on a list of objects: each has its own box — place them one by one")
         return [at(i, x, y, z, rx, ry, rz, on, anchor) for i in items]
     frame = on.matrix if on is not None else None
@@ -648,13 +642,13 @@ def transform(ob, x=0, y=0, z=0, rx=0, ry=0, rz=0, mirror=None):
 def _not_nested(items, verb):
     """Refuse a list holding a group and one of its own parts: the part would go twice."""
     from .assembly import Handle
-    roots = {(i.root if isinstance(i, Handle) else i).as_pointer() for i in items
-             if isinstance(i, (bpy.types.Object, Handle))}
+    roots = {B.key(i.root if isinstance(i, Handle) else i) for i in items
+             if B.is_object(i) or isinstance(i, Handle)}
     for i in items:
         o = i.root if isinstance(i, Handle) else i
         parent = getattr(o, "parent", None)
         while parent is not None:
-            if parent.as_pointer() in roots:
+            if B.key(parent) in roots:
                 raise ValueError(f"{verb}: {_core.given_name(o)!r} is inside {_core.given_name(parent)!r}, which "
                                  f"this call moves whole: give one of them")
             parent = parent.parent
@@ -709,9 +703,8 @@ def _recalled(ob):
     """(frame, values, anchor, anchor point) `at` last placed `ob` with. Never
     placed with `at` — or moved since by something else than sand3d — the placement it has
     is its frame, its values 0 (no frame at all for an object at its parent's origin)."""
-    kept = ob.get(PLACE)
+    kept = B.value(ob, PLACE)
     if kept is not None:
-        kept = kept.to_dict()
         frame = _matrix16(kept["frame"]) if len(kept["frame"]) == 16 else None
         values, anchor, point = {k: kept[k] for k in KEYS}, kept["anchor"] or None, Vector(kept["point"])
         now = Matrix(ob.matrix_basis)
@@ -734,7 +727,7 @@ def _on_frames(ob, frames, given, anchor):
     if items is not None:
         _not_nested(items, "at")
         return [c for i in items for c in _on_frames(i, frames, given, anchor)]
-    if not isinstance(ob, (bpy.types.Object, Handle)):
+    if not (B.is_object(ob) or isinstance(ob, Handle)):
         return [_replaced(ob, f.matrix, given) for f in frames]
     _anchor_point(Vector(), Vector(), anchor)          # a wrong word raises before anything is made
     root = ob.root if isinstance(ob, Handle) else ob

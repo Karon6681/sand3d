@@ -14,9 +14,8 @@ Nothing here touches geometry. `begin` runs at the entry of every public verb.
 import keyword
 import weakref
 
-import bpy
-
 from . import _core
+from ._backend import B
 
 #: Objects removed while a program may still hold them: id of the Python object -> (it, message).
 _gone = {}
@@ -61,14 +60,8 @@ def reset():
 
 
 def removed(ob):
-    """Whether `ob` is a Blender object that has been removed from the file."""
-    if not isinstance(ob, bpy.types.ID):
-        return False
-    try:
-        ob.name
-    except ReferenceError:
-        return True
-    return False
+    """Whether `ob` is an object of the backend's that has been removed from the file."""
+    return B.is_removed(ob)
 
 
 def _code(name):
@@ -91,7 +84,7 @@ def using_up(obs, target):
         return
     verb, line = calls[0][:2]
     for ob in _items(obs):
-        if isinstance(ob, bpy.types.Object) and not removed(ob):
+        if B.is_object(ob) and not removed(ob):
             name = _core.given_name(ob)
             copy = name if _code(name) == name else "..."
             keep = "" if verb == "at" else f" To keep it, pass s3d.copy({copy}) to {verb} instead."
@@ -139,7 +132,7 @@ def _items(args):
     from .assembly import Handle
     from .profile import Path, Placed
     for a in args:
-        if isinstance(a, (bpy.types.ID, Placed, Path)):
+        if B.is_data(a) or isinstance(a, (Placed, Path)):
             yield a
         elif isinstance(a, Handle):
             yield a.root
@@ -158,7 +151,7 @@ def begin(verb, args, kwargs):
         message, pending = pending, None
         raise ValueError(f"{verb}: {message}")
     for item in _items(list(args) + list(kwargs.values())):
-        if isinstance(item, bpy.types.ID):
+        if B.is_data(item):
             if verb != "delete" and removed(item):
                 gone = _gone.get(id(item))
                 raise ValueError(f"{verb}: {gone[1]}" if gone else f"{verb}: an object given was removed from the scene")
@@ -169,13 +162,13 @@ def begin(verb, args, kwargs):
         if unused:
             raise ValueError(f"{verb}: {unused[0][1]}")
     if verb in DISTINCT:
-        obs = [o for o in _items(args[DISTINCT[verb]:]) if isinstance(o, bpy.types.Object)]
+        obs = [o for o in _items(args[DISTINCT[verb]:]) if B.is_object(o)]
         seen = {}
         for o in obs:
-            seen[o.as_pointer()] = seen.get(o.as_pointer(), 0) + 1
+            seen[B.key(o)] = seen.get(B.key(o), 0) + 1
         for o in obs:
-            if seen[o.as_pointer()] > 1:
+            if seen[B.key(o)] > 1:
                 name = _core.given_name(o)
                 at = name if _code(name) == name else "..."
-                raise ValueError(f"{verb}: {name!r} is passed {seen[o.as_pointer()]} times; at moves an object, it "
+                raise ValueError(f"{verb}: {name!r} is passed {seen[B.key(o)]} times; at moves an object, it "
                                  f"does not copy it: s3d.at({at}, on=s3d.ring(...)) places one copy per frame")

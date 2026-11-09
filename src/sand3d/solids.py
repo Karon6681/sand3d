@@ -10,10 +10,11 @@ exists qualified by the solid's name: `plate.top`.
 import bisect
 import math
 
-from mathutils import Matrix, Vector, geometry
-
 from . import _core
+from ._backend import B
 from .profile import EPS, Loop, Path, Placed, Profile, _as_path, arc, circle, poly, rect, superellipse
+
+Matrix, Vector = B.Matrix, B.Vector
 
 
 # ---------------------------------------------------------------- shared pieces
@@ -237,17 +238,15 @@ def _extrude_until(name, profile, until, h2, on):
 
 def _merge_flat(ob):
     """Merge coplanar neighbours a sampled top or a split wall left as triangles."""
-    import bmesh
-    bm = bmesh.new()
-    bm.from_mesh(ob.data)
+    bm = B.edit_mesh(ob.data)
     bm.normal_update()
-    tags = [lay for lay in bm.faces.layers.bool.values()]
+    tags = list(B.layers(bm, "faces", "bool").values())
     flat = [e for e in bm.edges if len(e.link_faces) == 2 and e.smooth
             and e.link_faces[0].normal.dot(e.link_faces[1].normal) > 1 - 1e-9
             and all(e.link_faces[0][lay] == e.link_faces[1][lay] for lay in tags)]
     if flat:
-        bmesh.ops.dissolve_edges(bm, edges=flat, use_verts=False, use_face_split=False)
-    bm.to_mesh(ob.data)
+        B.dissolve_edges(bm, flat)
+    B.write_mesh(bm, ob.data)
     bm.free()
 
 
@@ -1097,7 +1096,7 @@ def wedge(name, w, d, h, top=0):
     ramp's profile, `d` deep."""
     shape = poly([(-w / 2, 0), (w / 2, 0), (top / 2, h), (-top / 2, h)])
     ob = extrude(name, shape, d, both=True)
-    ob.data.transform(Matrix(((1, 0, 0, 0), (0, 0, -1, 0), (0, 1, 0, 0), (0, 0, 0, 1))))   # a quarter turn about X, exact
+    B.transform_mesh(ob.data, Matrix(((1, 0, 0, 0), (0, 0, -1, 0), (0, 1, 0, 0), (0, 0, 0, 1))))   # a quarter turn about X, exact
     return ob
 
 

@@ -8,10 +8,10 @@ curve. `p + q` is the union of two profiles, `p - q` the first minus the second.
 """
 import math
 
-import bpy
-from mathutils import Vector, geometry
-
 from . import _core, _guard
+from ._backend import B
+
+Vector = B.Vector
 
 #: Two points closer than this (mm, so `_core.mm(EPS)` in the program's unit) are one point.
 EPS = 1e-6
@@ -318,7 +318,7 @@ def _simple(pts):
             if i == 0 and j == n - 1:
                 continue
             c, d = Vector(pts[j]), Vector(pts[(j + 1) % n])
-            if geometry.intersect_line_line_2d(a, b, c, d) is not None:
+            if B.intersect_line_line_2d(a, b, c, d) is not None:
                 return False
     return True
 
@@ -878,7 +878,7 @@ def mirror(p, flip="x"):
     `p` and its mirror image, as one profile: draw half an outline and get the whole.
     `flip` is the coordinate that changes sign — "x" (x → -x, the default) or "y", as
     in `transform(mirror=)`. For a solid's image: `s3d.transform(s3d.copy(ob), mirror="x")`."""
-    if isinstance(p, bpy.types.Object) or hasattr(p, "root"):
+    if B.is_object(p) or hasattr(p, "root"):
         raise TypeError("mirror: for a solid, s3d.transform(s3d.copy(ob), mirror=\"x\") — its image across the "
                         "plane x = 0 of its parent")
     if not isinstance(flip, str) or flip.lower() not in ("x", "y"):
@@ -894,25 +894,10 @@ def text(s, size, font=None):
 
     The outline of the text `s`, letters `size` high (the font's em), centred on its
     ink. `font` is the path of a .ttf/.otf file; Blender's own font otherwise."""
-    curve = bpy.data.curves.new("_text", "FONT")
-    curve.body = s
-    curve.size = size
-    curve.resolution_u = 6
-    if font:
-        curve.font = bpy.data.fonts.load(str(font), check_existing=True)
-    ob = _core.link(bpy.data.objects.new("_text", curve))
-    depsgraph = bpy.context.evaluated_depsgraph_get()
-    mesh = bpy.data.meshes.new_from_object(ob.evaluated_get(depsgraph), depsgraph=depsgraph)
-    bpy.data.objects.remove(ob)
-    bpy.data.curves.remove(curve)
-    co = [(v.co.x, v.co.y) for v in mesh.vertices]
+    co, faces = B.text_outline(s, size, font)
     directed = set()
-    for poly_ in mesh.polygons:
-        vs = list(poly_.vertices)
-        if poly_.normal.z < 0:
-            vs = vs[::-1]
+    for vs in faces:
         directed |= {(vs[i], vs[(i + 1) % len(vs)]) for i in range(len(vs))}
-    bpy.data.meshes.remove(mesh)
     outgoing = {}
     for a, b in sorted(directed):
         if (b, a) not in directed:

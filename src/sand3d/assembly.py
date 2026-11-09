@@ -1,9 +1,8 @@
 """The assembly layer: groups, handles and their anchors, details, export, the unit."""
 import os
 
-import bpy
-
 from . import _core, _guard, materials
+from ._backend import B
 
 
 def group(name, *children):
@@ -11,7 +10,7 @@ def group(name, *children):
 
     One parent for `children`, which keep their placements in its frame."""
     from .edit import _flat
-    root = _core.link(bpy.data.objects.new(name, None))
+    root = B.new_object(name, None)
     for child in _flat(children):
         child.parent = root
     return root
@@ -32,11 +31,10 @@ class Handle:
 def _read_on_root(anchor, root):
     """A frame with no part, as a frame read on `root`, in its own space; a list of them
     likewise. Anything else as it is."""
-    from mathutils import Matrix
     from .frames import Frame, Frames
-    if isinstance(anchor, Frame) and anchor.part is None and isinstance(root, bpy.types.Object):
+    if isinstance(anchor, Frame) and anchor.part is None and B.is_object(root):
         import copy
-        return copy.deepcopy(anchor)._read_on(root, Matrix.Identity(4))
+        return copy.deepcopy(anchor)._read_on(root, B.Matrix.Identity(4))
     if isinstance(anchor, (list, tuple)) and anchor and all(isinstance(f, Frame) for f in anchor):
         frames = [_read_on_root(f, root) for f in anchor]
         return Frames(frames) if isinstance(anchor, Frames) else type(anchor)(frames)
@@ -94,66 +92,18 @@ def export(root, path):
     if suffix == ".usda":
         usd.write_usda(root, path)
         return
-    lent = _lend_meshes()
+    lent = B.lend_meshes()
     try:
         name = root.name                                   # the GLB's scene: the exporter names it after coll
-        coll = bpy.data.collections.new("s3d~export")      # the exporter writes this, not the whole scene
-        bpy.context.scene.collection.children.link(coll)
+        coll = B.new_collection("s3d~export")              # the exporter writes this, not the whole scene
         state = urdf.glb_tree(root, coll)
         dressed = materials.dressed()           # asked before the tags come off: it reads them
-        tags = {m: m.pop(materials.TAG) for m in bpy.data.materials if materials.TAG in m}   # extras: joints only
-        clash = bpy.data.collections.get(name)  # a collection of the program's, lent its name meanwhile
         try:
-            if clash is not None:
-                clash.name = "s3d~export~lent"
-            coll.name = name
-            bpy.ops.export_scene.gltf(filepath=str(path), export_format="GLB", collection=coll.name,
-                                      export_extras=True,
-                                      export_materials="EXPORT" if dressed else "NONE")
+            B.export_glb(path, coll, name, dressed, materials.TAG)
         finally:
-            coll.name = "s3d~export"
-            if clash is not None:
-                clash.name = name
-            for m, tag in tags.items():
-                m[materials.TAG] = tag
             urdf.undo(state, coll)
     finally:
-        _return_meshes(lent)
-
-
-def _lend_meshes():
-    """Give each mesh object of the scene, for the exporter, a mesh of its own: a copy
-    rewritten through bmesh, which shares no array with anything. The exporter runs
-    `Mesh.validate()` on what it exports; on the program's own mesh it would edit the
-    scene, and under bpy 4.5 also the copies sharing that mesh's arrays. The copy takes
-    the mesh's name, which the GLB carries."""
-    import bmesh
-    objects, copies = [], {}
-    for ob in bpy.context.scene.objects:
-        if ob.type != "MESH":
-            continue
-        mesh = ob.data
-        if mesh not in copies:
-            name, own = mesh.name, mesh.copy()
-            bm = bmesh.new()
-            bm.from_mesh(own)
-            bm.to_mesh(own)
-            bm.free()
-            mesh.name = "s3d~lent"
-            own.name = name
-            copies[mesh] = (own, name)
-        objects.append((ob, mesh))
-        ob.data = copies[mesh][0]
-    return objects, copies
-
-
-def _return_meshes(lent):
-    objects, copies = lent
-    for ob, mesh in objects:
-        ob.data = mesh
-    for mesh, (own, name) in copies.items():
-        bpy.data.meshes.remove(own)
-        mesh.name = name
+        B.return_meshes(lent)
 
 
 def empty_scene():
@@ -162,9 +112,9 @@ def empty_scene():
     A fresh, empty scene: what a program starts from. Once anything was built, the
     unit goes back to millimetres, so a program that sets none never inherits the
     last one's; a unit set just before, with nothing built since, holds."""
-    built = _core.settled or len(bpy.data.objects) > 0
+    built = _core.settled or len(B.objects()) > 0
     _guard.reset()
-    bpy.ops.wm.read_factory_settings(use_empty=True)
+    B.reset_scene()
     _guard.reset()
     if built:
         _core.UNIT, _core.MM = "mm", _core.UNITS["mm"]
