@@ -1191,27 +1191,93 @@ def _eigen3(a):
 
 # ---------------------------------------------------------------- whole objects
 
-def copy(ob):
-    """An independent copy, its joints with it.
+def copy(ob, name=None):
+    """An independent copy, its joints with it; `name` names it, or {old: new} what it holds.
 
     An independent copy of `ob`: the same mesh, edge and face names, name and
     placement — a group or an assembly with its children, a handle with its anchors;
     a jointed part with its joints, hanging on the same parent (on the copy of its
-    parent, when the copy holds both).
+    parent, when the copy holds both). `name` gives the copy its own name in place of
+    `ob`'s; as a dict {old: new}, it names what the copy holds — every part, group or
+    joint named `old` — so that a door's mirror image and its hinge export as
+    `left_door` and `left_hinge` beside `door` and `hinge`, not as `door_2` and
+    `hinge_2`; a name the copy holds nothing of is refused.
     `ob` is untouched; to keep a tool a verb uses up, give it the copy."""
-    return _copy(ob)
+    return _copy(ob, name=name)
 
 
-def _copy(ob, children=None):
+def _copy(ob, children=None, name=None):
     """`copy`, given the scene's {parent: children} if it is known already."""
     from .assembly import Handle
+    root = ob.root if isinstance(ob, Handle) else ob
+    if children is None:
+        children = _children() if root.children else {}
+    names = _names_held(root, children, name) if name is not None else None   # refused before any copy
+    twins = _copy_tree(root, children)
+    if names is not None:
+        _renamed(twins, *names)
     if not isinstance(ob, Handle):
-        return _copy_tree(ob, children)[ob]
-    twins = _copy_tree(ob.root, children)
+        return twins[ob]
     memo = {id(o): twins.get(o, o) for o in _ids(vars(ob))}   # an object anchor becomes its twin
     handle = object.__new__(type(ob))
     handle.__dict__.update(deepcopy(vars(ob), memo))
     return handle
+
+
+def _names_held(root, children, name):
+    """`copy`'s `name`, read against `root`'s tree before it is copied: ({original: its
+    copy's name}, {joint name: its copy's}) — a string names the root; a dict names every
+    object whose given name is a key, and every joint named so. A name held by nothing,
+    or one that is no string, is refused, and no copy is made."""
+    from . import joints
+    if isinstance(name, str):
+        return {root: _checked_name(name)}, {}
+    if not isinstance(name, dict):
+        raise TypeError(f"copy: name is the copy's name, a string, or {{old: new}} for what it holds, "
+                        f"not {name!r}")
+    objects, named_joints, taken = {}, {}, set()
+    tree = [root]
+    for ob in tree:
+        tree += children.get(ob, [])
+        given = _core.given_name(ob)
+        if given in name:
+            objects[ob] = _checked_name(name[given])
+            taken.add(given)
+        for j in joints.joints_of(ob):
+            if j["name"] in name:
+                named_joints[j["name"]] = _checked_name(name[j["name"]])
+                taken.add(j["name"])
+    left = [k for k in name if k not in taken]
+    if left:
+        held = ", ".join(repr(k) for k in left)
+        raise ValueError(f"copy: name {held}: the copy holds no part, group or joint so named")
+    return objects, named_joints
+
+
+def _renamed(twins, objects, named_joints):
+    """The copies ({original: twin}) named as `_names_held` read it."""
+    from . import joints
+    for original, new in objects.items():
+        _rename(twins[original], new)
+    if named_joints:
+        for twin in twins.values():
+            js = joints.joints_of(twin)
+            if any(j["name"] in named_joints for j in js):
+                for j in js:
+                    j["name"] = named_joints.get(j["name"], j["name"])
+                joints._write(twin, js)
+
+
+def _checked_name(new):
+    if not isinstance(new, str) or not new:
+        raise TypeError(f"copy: a name is a string, not {new!r}")
+    return new
+
+
+def _rename(ob, new):
+    """`ob` named `new`: its given name, and Blender's, which the GLB's nodes carry."""
+    ob[_core.NAME] = _checked_name(new)
+    ob.name = new
 
 
 def _twin(ob):
