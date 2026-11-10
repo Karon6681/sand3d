@@ -77,6 +77,10 @@ s3d.export(machine, "washer.glb")    # or .urdf, .usda, .ifc, .obj, .stl
 `export` names `.ifc` for it, the open standard (ISO 16739) Revit opens and links. The
 scene is also an ordinary Blender scene, for anything else Blender writes.
 
+IFC exports the current pose, without joints. Its `GlobalId` values depend on geometry
+and placement: editing or moving a part can change its ID, and identical parts in separate
+models can share one. Do not use them to track parts across exports.
+
 ## Install
 
 Python 3.13 (recommended) or 3.11. Blender comes with it, as the `bpy` module: 5.2 LTS on
