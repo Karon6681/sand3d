@@ -170,6 +170,20 @@ class FoundByIssues(unittest.TestCase):
                              capture_output=True, timeout=120)
         self.assertEqual(run.returncode, 0)
 
+    def test_a_long_name_builds_and_keeps_its_names(self):
+        """A face name past Blender's 67 bytes was cut short, and looking it up by its
+        whole name raised a KeyError (#13). Such a name now holds a digest: two long
+        names alike to the cut stay apart, and each is found by its whole name, in
+        ASCII or not."""
+        first, second, third = "a" * 70 + "1", "a" * 70 + "2", "部" * 20
+        a = s3d.box(first, 10, 10, 10)
+        s3d.join(a, s3d.at(s3d.box(second, 10, 10, 20), x=8), s3d.at(s3d.box(third, 10, 10, 30), x=-8))
+        s3d.fillet(a, 1, edges=f"{second}.top")
+        self.assertAlmostEqual(a.face(f"{second}.top").origin.z, 20, places=4)
+        self.assertAlmostEqual(a.face(f"{third}.top").origin.z, 30, places=4)
+        self.assertAlmostEqual(a.face(f"{first}.bottom").origin.z, 0, places=4)
+        self.assertLessEqual(max(len(att.name.encode()) for att in a.data.attributes), 67)
+
     def test_a_tool_that_only_touches_cuts_nothing(self):
         """A groove cut away from the top it stands on printed its footprint on
         it, in slivers that clamped the top's chamfer to nothing. Since 1.0 such a cut

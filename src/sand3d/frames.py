@@ -189,7 +189,7 @@ def face(ob, which):
         if not chosen:
             raise ValueError(f"{_core.given_name(ob)} has no face facing {which}")
     else:
-        att = me.attributes.get(_core.FACE_TAG + which)
+        att = me.attributes.get(_core.tag_key(_core.FACE_TAG, which))
         if att is None:
             names = sorted(a.name[len(_core.FACE_TAG):] for a in me.attributes if a.name.startswith(_core.FACE_TAG))
             raise ValueError(_core.unknown(_core.given_name(ob), "face", [which], names))
@@ -275,7 +275,7 @@ def edge(ob, which):
     crosses its own +X (+Z, +Y); an open one runs toward +X (then +Y, +Z). Edges that fork
     raise: a path follows a line, not a junction."""
     me = ob.data
-    att = me.attributes.get(_core.EDGE_TAG + which) if isinstance(which, str) else None
+    att = me.attributes.get(_core.tag_key(_core.EDGE_TAG, which)) if isinstance(which, str) else None
     if att is None or att.domain != "EDGE":
         names = sorted(a.name[len(_core.EDGE_TAG):] for a in me.attributes if a.name.startswith(_core.EDGE_TAG))
         raise ValueError(_core.unknown(_core.given_name(ob), "edge", [str(which)], names))

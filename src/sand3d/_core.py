@@ -3,6 +3,7 @@
 Nothing here is public. No function reads `bpy.context.active_object` or the
 selection; the scene collection is the only context a verb touches.
 """
+import hashlib
 import math
 
 import bpy  # before bmesh, which the bpy module only provides once loaded
@@ -140,6 +141,36 @@ CAPS = ("top", "bottom", "start", "end")
 #: Prefixes of the mesh attributes that hold provenance tags: one per domain,
 #: because a mesh attribute's name is unique across domains.
 FACE_TAG, EDGE_TAG = "s3d_face:", "s3d_edge:"
+#: The longest attribute name, in UTF-8 bytes, Blender keeps whole (4.5 and 5.2): it cuts a longer one.
+NAME_MAX = 67
+
+
+def _size(s):
+    return len(s.encode())
+
+
+def _fit(s, n):
+    """`s`, or its first characters and a digest of it, in `n` bytes."""
+    b = s.encode()
+    return s if len(b) <= n else b[:max(n - 9, 0)].decode(errors="ignore") + "~" + hashlib.sha1(b).hexdigest()[:8]
+
+
+def tag_key(prefix, tag):
+    """The attribute name that holds `tag`: `prefix + tag`, or, past NAME_MAX bytes, the
+    part before the last dot shortened with a digest, so long names stay apart and the
+    cap after the dot (`plate.top`) still reads."""
+    if _size(prefix + tag) <= NAME_MAX:
+        return prefix + tag
+    name, dot, cap = tag.rpartition(".")
+    cap = _fit(cap, 20)
+    return prefix + _fit(name, NAME_MAX - _size(prefix + dot + cap)) + dot + cap
+
+
+def stored(prefix, tag):
+    """`tag` as the attribute holding it spells it, without the prefix."""
+    return tag_key(prefix, tag)[len(prefix):]
+
+
 #: Internal face attribute: which smooth surface a face belongs to.
 SURFACE = "s3d~surface"
 
@@ -162,7 +193,7 @@ class Builder:
         self.name = name
         self.bm = bmesh.new()
         self.surface = self.bm.faces.layers.int.new(SURFACE)
-        self.layers = {t: self.bm.faces.layers.bool.new(FACE_TAG + t) for t in self.TAGS}
+        self.layers = {t: self.bm.faces.layers.bool.new(tag_key(FACE_TAG, t)) for t in self.TAGS}
 
     def vert(self, co):
         return self.bm.verts.new(co)
@@ -210,7 +241,7 @@ class Builder:
                 tags.add(kind)
             edge_tags.append(tags)
         for t in self.TAGS:  # by name each time: removing a layer invalidates the other handles
-            bm.faces.layers.bool.remove(bm.faces.layers.bool[FACE_TAG + t])
+            bm.faces.layers.bool.remove(bm.faces.layers.bool[tag_key(FACE_TAG, t)])
         bm.faces.layers.int.remove(bm.faces.layers.int[SURFACE])
         write_tags(bm, name, face_tags, edge_tags)
         bmesh.ops.recalc_face_normals(bm, faces=bm.faces)
@@ -231,22 +262,22 @@ def write_tags(bm, name, face_tags, edge_tags):
     face_tags = [qualified(t) for t in face_tags]
     edge_tags = [None if t is None else qualified(t) for t in edge_tags]
     for t in sorted({t for tags in face_tags for t in tags}):
-        if bm.faces.layers.bool.get(FACE_TAG + t) is None:
-            bm.faces.layers.bool.new(FACE_TAG + t)
+        if bm.faces.layers.bool.get(tag_key(FACE_TAG, t)) is None:
+            bm.faces.layers.bool.new(tag_key(FACE_TAG, t))
     for t in sorted({t for tags in edge_tags if tags for t in tags}):
-        if bm.edges.layers.bool.get(EDGE_TAG + t) is None:
-            bm.edges.layers.bool.new(EDGE_TAG + t)
+        if bm.edges.layers.bool.get(tag_key(EDGE_TAG, t)) is None:
+            bm.edges.layers.bool.new(tag_key(EDGE_TAG, t))
     flayers = {lay.name[len(FACE_TAG):]: lay for lay in bm.faces.layers.bool.values()
                if lay.name.startswith(FACE_TAG)}
     elayers = {lay.name[len(EDGE_TAG):]: lay for lay in bm.edges.layers.bool.values()
                if lay.name.startswith(EDGE_TAG)}
     for f, tags in zip(bm.faces, face_tags):
         for t in tags:
-            f[flayers[t]] = True
+            f[flayers[stored(FACE_TAG, t)]] = True
         f.smooth = True
     for e, tags in zip(bm.edges, edge_tags):
         for t in tags or ():
-            e[elayers[t]] = True
+            e[elayers[stored(EDGE_TAG, t)]] = True
         e.smooth = tags is None
 
 
@@ -300,20 +331,20 @@ def add_tags(bm, face_add, edge_add):
     """Add names to elements of `bm` by index: {face index: tags}, {edge index: tags}.
     Edges that gain a name become sharp."""
     for t in sorted({t for tags in face_add.values() for t in tags}):
-        if bm.faces.layers.bool.get(FACE_TAG + t) is None:
-            bm.faces.layers.bool.new(FACE_TAG + t)
+        if bm.faces.layers.bool.get(tag_key(FACE_TAG, t)) is None:
+            bm.faces.layers.bool.new(tag_key(FACE_TAG, t))
     for t in sorted({t for tags in edge_add.values() for t in tags}):
-        if bm.edges.layers.bool.get(EDGE_TAG + t) is None:
-            bm.edges.layers.bool.new(EDGE_TAG + t)
+        if bm.edges.layers.bool.get(tag_key(EDGE_TAG, t)) is None:
+            bm.edges.layers.bool.new(tag_key(EDGE_TAG, t))
     bm.faces.ensure_lookup_table()
     bm.edges.ensure_lookup_table()
     for i, tags in face_add.items():
         f = bm.faces[i]
         for t in tags:
-            f[bm.faces.layers.bool[FACE_TAG + t]] = True
+            f[bm.faces.layers.bool[tag_key(FACE_TAG, t)]] = True
     for i, tags in edge_add.items():
         e = bm.edges[i]
         for t in tags:
-            e[bm.edges.layers.bool[EDGE_TAG + t]] = True
+            e[bm.edges.layers.bool[tag_key(EDGE_TAG, t)]] = True
         e.smooth = False
     bm.normal_update()
