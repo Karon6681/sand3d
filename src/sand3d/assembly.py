@@ -73,12 +73,9 @@ def export(root, path):
     USD layer as text, the URDF's links, joints and names in UsdGeom and UsdPhysics, Z up,
     with the materials (`.usdc` is binary: convert the `.usda`) — or an IFC4 file, the part
     tree as an IfcProject of assemblies and proxies, every mesh a triangulated face set at
-    the current pose, with the materials, which Revit, ArchiCAD, Tekla and Solibri open and
-    link. IFC carries no joints; its GlobalIds depend on geometry and placement, so they
-    can change when a part is edited or moved, and identical parts in separate models can share
-    one: do not use them to track parts across exports. Or the meshes alone, as OBJ (Y up)
-    or binary STL (Z up), at the current pose. Limits only: masses,
-    frictions, efforts and drives are dynamics, which sand3d does not say."""
+    the current pose, with materials but no joints; GlobalIds are not stable across edits or
+    unique across models — or the meshes alone, as OBJ (Y up) or binary STL (Z up), at the current pose.
+    Limits only: masses, frictions, efforts and drives are dynamics, which sand3d does not say."""
     from . import ifcfile, meshfile, urdf, usd
     from .assembly import Handle
     root = root.root if isinstance(root, Handle) else root

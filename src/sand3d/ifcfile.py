@@ -39,7 +39,9 @@ and the USDA carry the joints. No timestamp either, and the ids are digests rath
 chance — of a part's name and its geometry, of a group's name and its parts, of the
 model's for the project above them — so two runs of a program write the same bytes, as
 they do for every other format sand3d writes, and two parts or two models that only share
-a name still get ids of their own.
+a name still get ids of their own. These IDs depend on geometry and placement: editing or
+moving a part can change its ID, and identical parts in separate models can share one.
+They do not provide persistent identity across exports.
 """
 import hashlib
 import os
