@@ -342,28 +342,31 @@ def write_tags(bm, name, face_tags, edge_tags):
     """Write provenance onto `bm` by element index: tag sets per face and per edge
     (None for an edge that is no real edge), each tag plain and qualified by `name`.
     Real edges are marked sharp, faces smooth."""
-    def qualified(tags):
-        return set(tags) | {f"{name}.{t}" for t in tags if "." not in t} if name else set(tags)
-    face_tags = [qualified(t) for t in face_tags]
-    edge_tags = [None if t is None else qualified(t) for t in edge_tags]
-    for t in sorted({t for tags in face_tags for t in tags}):
-        if bm.faces.layers.bool.get(tag_key(FACE_TAG, t)) is None:
-            bm.faces.layers.bool.new(tag_key(FACE_TAG, t))
-    for t in sorted({t for tags in edge_tags if tags for t in tags}):
-        if bm.edges.layers.bool.get(tag_key(EDGE_TAG, t)) is None:
-            bm.edges.layers.bool.new(tag_key(EDGE_TAG, t))
-    flayers = {lay.name[len(FACE_TAG):]: lay for lay in bm.faces.layers.bool.values()
-               if lay.name.startswith(FACE_TAG)}
-    elayers = {lay.name[len(EDGE_TAG):]: lay for lay in bm.edges.layers.bool.values()
-               if lay.name.startswith(EDGE_TAG)}
-    for f, tags in zip(bm.faces, face_tags):
-        for t in tags:
-            f[flayers[stored(FACE_TAG, t)]] = True
-        f.smooth = True
-    for e, tags in zip(bm.edges, edge_tags):
-        for t in tags or ():
-            e[elayers[stored(EDGE_TAG, t)]] = True
-        e.smooth = tags is None
+    def names(groups):
+        tags = {tag for group in groups if group for tag in group}
+        return {tag: {tag, f"{name}.{tag}"} if name and "." not in tag else {tag}
+                for tag in tags}
+    fnames, enames = names(face_tags), names(edge_tags)
+    for domain, prefix, mapping in ((bm.faces, FACE_TAG, fnames), (bm.edges, EDGE_TAG, enames)):
+        for tag in sorted({t for qualified in mapping.values() for t in qualified}):
+            key = tag_key(prefix, tag)
+            if domain.layers.bool.get(key) is None:
+                domain.layers.bool.new(key)
+    # Resolve handles only once every layer exists: adding one invalidates handles.
+    flayers = {tag: tuple(bm.faces.layers.bool[tag_key(FACE_TAG, t)] for t in qualified)
+               for tag, qualified in fnames.items()}
+    elayers = {tag: tuple(bm.edges.layers.bool[tag_key(EDGE_TAG, t)] for t in qualified)
+               for tag, qualified in enames.items()}
+    for face, tags in zip(bm.faces, face_tags):
+        for tag in tags:
+            for layer in flayers[tag]:
+                face[layer] = True
+        face.smooth = True
+    for edge, tags in zip(bm.edges, edge_tags):
+        for tag in tags or ():
+            for layer in elayers[tag]:
+                edge[layer] = True
+        edge.smooth = tags is None
 
 
 def new_object(name, bm):
