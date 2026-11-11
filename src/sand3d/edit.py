@@ -982,13 +982,36 @@ def _sort_mesh(bm):
     """Vertices by position, edges and faces by their vertices: bevel and the boolean modifier
     make them in an order that changes with the run or the machine's thread count. Only
     where nothing holds an element: sorting moves them."""
-    def by(seq, key):
-        rank = {x: i for i, x in enumerate(sorted(seq, key=key))}
+    def by(seq, rows, dtype, width=None):
+        if not rows:
+            return
+        if width is None:
+            values = np.asarray(rows, dtype=dtype)
+        else:
+            # A polygon's vertex list sorts before any longer list with that prefix.
+            # Keep very wide, mostly empty matrices out of the allocation path.
+            if width > 32:
+                order = sorted(range(len(rows)), key=rows.__getitem__)
+                values = None
+            else:
+                values = np.full((len(rows), width), -1, dtype=dtype)
+                for i, row in enumerate(rows):
+                    values[i, :len(row)] = row
+        if values is not None:
+            if dtype == np.float64 and not np.isfinite(values).all():
+                order = sorted(range(len(rows)), key=rows.__getitem__)
+            else:
+                # lexsort is stable: coincident elements retain their original order.
+                order = np.lexsort(values[:, ::-1].T)
+        ranks = np.empty(len(rows), dtype=np.intp)
+        ranks[order] = np.arange(len(rows))
+        rank = dict(zip(seq, map(int, ranks)))
         seq.sort(key=rank.__getitem__)
         seq.index_update()
-    by(bm.verts, lambda v: tuple(v.co))
-    by(bm.edges, lambda e: sorted(v.index for v in e.verts))
-    by(bm.faces, lambda f: [v.index for v in f.verts])
+    by(bm.verts, [tuple(v.co) for v in bm.verts], np.float64)
+    by(bm.edges, [sorted(v.index for v in e.verts) for e in bm.edges], np.int32)
+    rows = [[v.index for v in f.verts] for f in bm.faces]
+    by(bm.faces, rows, np.int32, max(map(len, rows), default=0))
 
 
 def fillet(ob, r, edges="all"):
