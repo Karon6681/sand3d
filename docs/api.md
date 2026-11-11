@@ -315,7 +315,7 @@ A five-argument colour refuses missing or undefined coordinates.
 
 Array colour functions receive float64 `x`, `y`, `z`, and `u` arrays of shape `(k,)`
 for all faces of a part, and `n` of shape `(3, k)` (`n[2]` is always the z normal).
-Return a numeric sRGB array of shape `(k, 3)`, finite and in [0,1]. Only this
+Return a numeric NumPy sRGB array of shape `(k, 3)`, finite and in [0,1]. Only this
 orientation is accepted: rows are faces, even when k=3. Hex string arrays and
 channel-first `(3, k)` arrays are not accepted; convert hex to RGB in the function.
 For example, `lambda x,y,z: np.stack((x*0+.2, y*0+.4, z*0+.6), axis=-1)`.

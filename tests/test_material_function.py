@@ -58,6 +58,10 @@ class MaterialFunction(unittest.TestCase):
             return [sum(s.data[i].value/e.data[i].value if e.data[i].value else float('nan')
                         for i in f.vertices)/len(f.vertices) for f in mesh.polygons]
         self.assertEqual(face_u(mesh), reference())
+        rng = np.random.default_rng(0)
+        s.data.foreach_set('value', rng.uniform(-100, 100, len(s.data)))
+        e.data.foreach_set('value', rng.uniform(.1, 100, len(e.data)))
+        self.assertEqual(face_u(mesh), reference())
         e.data[0].value = 0
         import math
         for actual, expected in zip(face_u(mesh), reference()):
@@ -79,6 +83,18 @@ class MaterialFunction(unittest.TestCase):
             return color(x,y,z,n,u).tolist()
         s3d.material(a, 'plastic', color=scalar)
         self.assertEqual(vector, materials.face_colors(a))
+
+    def test_scalar_rgb_tuple_on_three_faces(self):
+        import bpy
+        mesh = bpy.data.meshes.new('three faces')
+        mesh.from_pydata([(0,0,0),(1,0,0),(0,1,0),(0,0,1)], [],
+                         [(0,1,2),(0,2,3),(0,3,1)])
+        a = bpy.data.objects.new('three faces', mesh)
+        bpy.context.collection.objects.link(a)
+        s3d.material(a, 'plastic', color=lambda x,y,z: (x*.2, y*.3, z*.4))
+        expected = [materials._linear((f.center.x*.2, f.center.y*.3, f.center.z*.4))
+                    for f in mesh.polygons]
+        self.assertEqual(materials.face_colors(a), expected)
 
     def test_array_errors_and_scalar_fallback(self):
         a = s3d.box('a', 10, 10, 10)
@@ -162,8 +178,7 @@ a=s.wire('a',s.spline([(0,-798,1197),(0,-1302,1386),(0,-1218,1722),(0,-1092,2016
 s.material(a,'plastic',color=lambda x,y,z,n,u: '#ff0000' if int(u*6)%2 else '#0000ff')
 b=s.dome('cap',1200,450); s.displace(b,40,300,seed=3,refine=False)
 s.material(b,'plastic',color=lambda x,y,z,n,u: np.stack((x*0+.2,n[2]*.1+.5,u*.3),axis=-1))
-print(materials.face_colors(b))
-print(([tuple(v.co) for v in a.data.vertices], [tuple(f.vertices) for f in a.data.polygons], __import__('sand3d._coordinates',fromlist=['face_u']).face_u(a.data), materials.face_colors(a), [tuple(v.co) for v in b.data.vertices]))
+print(([tuple(v.co) for v in a.data.vertices], [tuple(f.vertices) for f in a.data.polygons], __import__('sand3d._coordinates',fromlist=['face_u']).face_u(a.data), materials.face_colors(a), materials.face_colors(b), [tuple(v.co) for v in b.data.vertices]))
 """
         a = subprocess.run([sys.executable, '-c', code], check=True, capture_output=True).stdout
         b = subprocess.run([sys.executable, '-c', code], check=True, capture_output=True).stdout

@@ -88,7 +88,7 @@ def material(ob, kind, color=None, roughness=None, metallic=None, opacity=None, 
     color(x, y, z[, n[, u]]), at local face centres in program units. Scalar calls
     receive an outward unit normal tuple and lengthwise u, returning sRGB hex or
     an RGB tuple/list in [0, 1]. Array calls receive float64 x/y/z/u of shape (k,)
-    and n of shape (3, k), returning a numeric RGB array of shape (k, 3) in [0, 1].
+    and n of shape (3, k), returning a numeric NumPy RGB array of shape (k, 3) in [0, 1].
     A probe on up to eight faces selects array evaluation; an exception or wrong
     shape falls back to scalar calls in face index order. Array evaluation then
     calls once for all faces of the part. The probe is an extra call: functions
@@ -272,8 +272,8 @@ def face_colors(ob):
     size = min(8, len(centres))
     vectorized = False
     try:
-        probe = np.asarray(fn(*(a[..., :size] for a in args)))
-        vectorized = probe.shape == (size, 3)
+        probe = fn(*(a[..., :size] for a in args))
+        vectorized = isinstance(probe, np.ndarray) and probe.shape == (size, 3)
     except Exception:
         # Scalar functions may reject arrays in arbitrary user code.
         pass

@@ -1,4 +1,6 @@
 """Construction labels, in program units, independent of later placement."""
+import sys
+
 import numpy as np
 
 NAMES = ('.s3d_s', '.s3d_x', '.s3d_y', '.s3d_extent')
@@ -23,6 +25,21 @@ def face_u(mesh):
     mesh.loops.foreach_get('vertex_index', vertices)
     mesh.polygons.foreach_get('loop_total', sizes)
     sums = np.zeros(len(sizes), dtype=np.float64)
-    # Accumulate in corner order, like Python sum, including on n-gons.
-    np.add.at(sums, np.repeat(np.arange(len(sizes)), sizes), ratio[vertices])
+    if sys.version_info < (3, 12):
+        np.add.at(sums, np.repeat(np.arange(len(sizes)), sizes), ratio[vertices])
+    else:
+        # Python 3.12+ sum uses compensated addition. Keep its operation order,
+        # vectorising across faces rather than changing the reduction per face.
+        starts = np.empty(len(sizes), dtype=np.int32)
+        mesh.polygons.foreach_get('loop_start', starts)
+        for width in np.unique(sizes):
+            ids = np.flatnonzero(sizes == width)
+            hi, lo = np.zeros(len(ids)), np.zeros(len(ids))
+            for corner in range(int(width)):
+                x = ratio[vertices[starts[ids] + corner]]
+                total = hi + x
+                lo += np.where(np.abs(hi) >= np.abs(x), (hi-total)+x, (x-total)+hi)
+                hi = total
+            sums[ids] = hi + np.where(np.isfinite(lo), lo, 0)
+
     return (sums / sizes).tolist()
