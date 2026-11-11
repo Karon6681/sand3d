@@ -434,13 +434,13 @@ def _describe(ob, m):
         out["volume"] = None if out["open_edges"] else bm.calc_volume()
         bm.free()
         areas = [p.area for p in ob.data.polygons]
-        for a in ob.data.attributes:
-            held = [v.value for v in a.data] if a.name.startswith((_core.FACE_TAG, _core.EDGE_TAG)) else []
-            if not any(held):
-                continue
-            name = a.name.split(":", 1)[1]
-            if a.domain == "FACE":
-                out["faces"][name] = sum(x for x, v in zip(areas, held) if v)
+        held = {(a.domain, a.name.split(":", 1)[1]): [v.value for v in a.data] for a in ob.data.attributes
+                if a.name.startswith((_core.FACE_TAG, _core.EDGE_TAG))}
+        for (domain, name), h in held.items():
+            if not any(h) or ("." in name and held.get((domain, name.rpartition(".")[2])) == h):
+                continue      # a qualified name only where it differs from the plain one
+            if domain == "FACE":
+                out["faces"][name] = sum(x for x, v in zip(areas, h) if v)
             else:
                 out["edges"].append(name)
         out["edges"].sort()

@@ -16,9 +16,9 @@ class Describe(unittest.TestCase):
         d = s3d.describe(s3d.box("box", 100, 60, 10))
         self.assertEqual((d["bbox"], d["size"], d["open_edges"]), ([[-50, -30, 0], [50, 30, 10]], [100, 60, 10], 0))
         self.assertAlmostEqual(d["volume"], 60000, places=6)
-        self.assertEqual(sorted(d["faces"]), ["bottom", "box.bottom", "box.side", "box.top", "side", "top"])
+        self.assertEqual(sorted(d["faces"]), ["bottom", "side", "top"], "box.top is top: listed once")
         self.assertAlmostEqual(d["faces"]["side"], 3200, places=6)
-        self.assertEqual(sorted(d["edges"]), ["bottom", "box.bottom", "box.side", "box.top", "side", "top"])
+        self.assertEqual(d["edges"], ["bottom", "side", "top"])
 
     def test_every_name_reads_back(self):
         """After a hole and a join, long names included."""
@@ -27,6 +27,7 @@ class Describe(unittest.TestCase):
         s3d.join(part, s3d.at(s3d.box("b", 10, 10, 10), z=10))
         d = s3d.describe(part)
         self.assertIn("hole.side", d["faces"])
+        self.assertIn("b.top", d["faces"], "after a join, top is two parts' tops")
         for name in d["edges"]:
             part.edge(name)
         part.face(next(n for n in d["faces"] if "~" in n))
