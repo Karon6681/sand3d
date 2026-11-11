@@ -73,6 +73,45 @@ class Copy(unittest.TestCase):
         s3d.material(root, "steel")
         self.assertIs(original.data, twin.data)
 
+    def test_glb_instances_and_repeated_export(self):
+        import json
+        import struct
+        import tempfile
+        from pathlib import Path
+        for mode in ("material", "vertex"):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as directory:
+                s3d.empty_scene()
+                original = s3d.box("part", 10, 10, 10)
+                s3d.material(original, "plastic", color=lambda x, y, z: (.2, .4, abs(z)/10))
+                twin = s3d.at(s3d.copy(original), x=20, rz=30)
+                root = s3d.group("pair", original, twin)
+                mesh = original.data
+                count = len(bpy.data.meshes)
+                path = Path(directory) / "part.glb"
+                s3d.export(root, path, colors=mode)
+                first = path.read_bytes()
+                size = struct.unpack_from("<I", first, 12)[0]
+                doc = json.loads(first[20:20+size])
+                self.assertEqual(len(doc["meshes"]), 1)
+                self.assertEqual(sum("mesh" in n for n in doc["nodes"]), 2)
+                s3d.export(root, path, colors=mode)
+                self.assertEqual(path.read_bytes(), first)
+                self.assertIs(original.data, mesh)
+                self.assertIs(twin.data, mesh)
+                self.assertEqual(len(bpy.data.meshes), count)
+
+    def test_lay_detaches_before_refinement_and_placement(self):
+        for refine in (0, 8):
+            with self.subTest(refine=refine):
+                s3d.empty_scene()
+                original = s3d.box("part", 10, 10, 2)
+                twin = s3d.copy(original)
+                before = mesh_of(original)
+                carrier = s3d.box("carrier", 40, 40, 5)
+                s3d.lay(twin, carrier, refine=refine)
+                self.assertEqual(mesh_of(original), before)
+                self.assertIsNot(original.data, twin.data)
+
     def test_a_list_is_copied_element_by_element(self):
         """A list is worth its elements: `copy([a, b])` raised AttributeError on the list."""
         base = s3d.box("base", 40, 40, 10)

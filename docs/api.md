@@ -305,7 +305,8 @@ Closed paths retain a seam in s. Named noise with path coordinates is refused.
 Colour functions declare exactly 3, 4 or 5 positional parameters, no variadics or
 keyword-only arguments: `color(x,y,z[,n[,u]])`, returning sRGB `"#rrggbb"` or an RGB
 triple in [0,1]. They read local face centres in program units and outward unit
-normal tuples, once per face in index order after the array probe below. `u` is the face mean of vertex
+normal tuples, once per face in index order after the array probe below. Identical
+instances can share these colours during one export. `u` is the face mean of vertex
 s / extent: section progression for loft, arc-length progression for wire/sweep,
 height from bottom to top for revolve/dome/sphere/cone/cylinder; caps take their
 end value. Loft's normalization extent varies with section progression so s stays

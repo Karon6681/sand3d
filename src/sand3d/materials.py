@@ -94,7 +94,7 @@ def material(ob, kind, color=None, roughness=None, metallic=None, opacity=None, 
     calls once for all faces of the part. The probe is an extra call: functions
     must be pure, without side effects or random state, and agree in both forms.
     Each export evaluates anew; corner and mean readers share the result within
-    that export. Functions are session-local, not serialised in Blender files;
+    that export, and identical instances can share it too. Functions are session-local, not serialised in Blender files;
     copy keeps the reference, join and merge keep the first object's.
     """
     from .assembly import Handle
