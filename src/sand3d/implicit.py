@@ -42,40 +42,74 @@ def noise(x, y, z, seed=0, kind="perlin"):
              for d in steps}
             for b, k in zip(base, (1597334677, 3812015801, 2798796415))
         ]
-    if kind == "cells":
-        distance = np.full(q[0].shape, np.inf)
-        for delta in itertools.product((-1, 0, 1), repeat=3):
-            hashed = products[0][delta[0]] ^ products[1][delta[1]] ^ products[2][delta[2]]
-            dist = np.zeros(q[0].shape)
+    if q[0].size <= 64:
+        # A leading neighbour axis amortizes ufunc/Python overhead for scalars.
+        neighbours = np.array(list(itertools.product(steps, repeat=3)))
+        shape = (len(neighbours),) + (1,) * q[0].ndim
+        offsets = [neighbours[:, c].reshape(shape) for c in range(3)]
+        hashed = [np.stack([products[c][d] for d in neighbours[:, c]])
+                  for c in range(3)]
+        hashed = hashed[0] ^ hashed[1] ^ hashed[2]
+        if kind == "cells":
+            dist = np.zeros((len(neighbours),) + q[0].shape)
             for c in range(3):
-                offset = (
-                    _mix(hashed, seed + 1013 * (c + 1)).astype(np.float64) / 4294967296
-                )
-                dist += (delta[c] + offset - frac[c]) ** 2
-            np.minimum(distance, dist, out=distance)
-        result = 1 - 2 * np.minimum(1, np.sqrt(distance) / math.sqrt(3))
-    else:
-        fade = [f * f * f * (f * (f * 6 - 15) + 10) for f in frac]
-        result = np.zeros(q[0].shape)
-        for corner in itertools.product((0, 1), repeat=3):
-            h = _mix(products[0][corner[0]] ^ products[1][corner[1]] ^ products[2][corner[2]], seed)
-            # Twelve edge directions of the cube, constructed without a table.
+                offset = _mix(hashed, seed + 1013 * (c + 1)).astype(np.float64) / 4294967296
+                dist += (offsets[c] + offset - frac[c]) ** 2
+            result = 1 - 2 * np.minimum(1, np.sqrt(dist.min(axis=0)) / math.sqrt(3))
+        else:
+            h = _mix(hashed, seed)
             axis = h % 3
-            dot = np.zeros(q[0].shape)
+            dot = np.zeros(h.shape)
+            weight = np.ones(h.shape)
             for c in range(3):
-                term = np.asarray(frac[c] - corner[c])
-                np.negative(term, out=term, where=((h >> (c + 3)) & 1) == 0)
-                np.copyto(term, 0.0, where=axis == c)
-                dot += term
-            weight = np.ones(q[0].shape)
-            for c in range(3):
-                weight *= fade[c] if corner[c] else 1 - fade[c]
-            result += weight * dot
-        result = np.clip(result, -1, 1)
-        if kind == "ridged":
-            result = 1 - 2 * np.abs(result)
-        if kind == "turbulence":
-            result = 2 * np.abs(result) - 1
+                sign = np.where((h >> (c + 3)) & 1, 1.0, -1.0)
+                dot += np.where(axis == c, 0.0, sign * (frac[c] - offsets[c]))
+                f = frac[c]
+                fade = f * f * f * (f * (f * 6 - 15) + 10)
+                weight *= np.where(offsets[c], fade, 1 - fade)
+            # Accumulate in original corner order, including the initial +0.
+            terms = weight * dot
+            result = np.zeros(q[0].shape)
+            for term in terms:
+                result += term
+            result = np.clip(result, -1, 1)
+            if kind == "ridged":
+                result = 1 - 2 * np.abs(result)
+            if kind == "turbulence":
+                result = 2 * np.abs(result) - 1
+    else:
+        if kind == "cells":
+            distance = np.full(q[0].shape, np.inf)
+            for delta in itertools.product((-1, 0, 1), repeat=3):
+                hashed = products[0][delta[0]] ^ products[1][delta[1]] ^ products[2][delta[2]]
+                dist = np.zeros(q[0].shape)
+                for c in range(3):
+                    offset = (
+                        _mix(hashed, seed + 1013 * (c + 1)).astype(np.float64) / 4294967296
+                    )
+                    dist += (delta[c] + offset - frac[c]) ** 2
+                np.minimum(distance, dist, out=distance)
+            result = 1 - 2 * np.minimum(1, np.sqrt(distance) / math.sqrt(3))
+        else:
+            fade = [f * f * f * (f * (f * 6 - 15) + 10) for f in frac]
+            result = np.zeros(q[0].shape)
+            for corner in itertools.product((0, 1), repeat=3):
+                h = _mix(products[0][corner[0]] ^ products[1][corner[1]] ^ products[2][corner[2]], seed)
+                # Twelve edge directions of the cube, constructed without a table.
+                axis = h % 3
+                dot = np.zeros(q[0].shape)
+                for c in range(3):
+                    sign = np.where((h >> (c + 3)) & 1, 1.0, -1.0)
+                    dot += np.where(axis == c, 0.0, sign * (frac[c] - corner[c]))
+                weight = np.ones(q[0].shape)
+                for c in range(3):
+                    weight *= fade[c] if corner[c] else 1 - fade[c]
+                result += weight * dot
+            result = np.clip(result, -1, 1)
+            if kind == "ridged":
+                result = 1 - 2 * np.abs(result)
+            if kind == "turbulence":
+                result = 2 * np.abs(result) - 1
     return float(result) if result.ndim == 0 else result
 
 

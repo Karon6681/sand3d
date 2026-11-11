@@ -93,6 +93,8 @@ class NoiseIdentity(unittest.TestCase):
                         self.assertEqual(a.shape, b.shape)
                         self.assertEqual(a.tobytes(), b.tobytes())
                     compare(*coordinates)
+                    compare(*coordinates[:, :31])
+                    compare(coordinates[0, :5, None], coordinates[1, None, :7], -3.)
                     compare(coordinates[0, :17, None], coordinates[1, None, :13], -3.)
                     compare(*coordinates[:, :0])
                     for xyz in coordinates[:, ::43].T:
