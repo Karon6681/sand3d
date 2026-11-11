@@ -983,9 +983,9 @@ def _sort_mesh(bm):
     make them in an order that changes with the run or the machine's thread count. Only
     where nothing holds an element: sorting moves them."""
     def by(seq, rows, dtype, width=None):
-        if not rows:
+        if len(rows) == 0:
             return
-        if width is None:
+        if width is None or all(len(row) == width for row in rows):
             values = np.asarray(rows, dtype=dtype)
         else:
             # A polygon's vertex list sorts before any longer list with that prefix.
@@ -1009,7 +1009,10 @@ def _sort_mesh(bm):
         seq.sort(key=rank.__getitem__)
         seq.index_update()
     by(bm.verts, [tuple(v.co) for v in bm.verts], np.float64)
-    by(bm.edges, [sorted(v.index for v in e.verts) for e in bm.edges], np.int32)
+    edge_keys = np.fromiter((v.index for e in bm.edges for v in e.verts),
+                            dtype=np.int32, count=2 * len(bm.edges)).reshape(-1, 2)
+    edge_keys.sort(axis=1)
+    by(bm.edges, edge_keys, np.int32)
     rows = [[v.index for v in f.verts] for f in bm.faces]
     by(bm.faces, rows, np.int32, max(map(len, rows), default=0))
 
