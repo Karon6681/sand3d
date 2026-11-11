@@ -89,6 +89,7 @@ Frame(origin=(0, 0, 0), normal=(0, 0, 1), up=None)  # A place to build on
 ob.face(which)  # Frame of a named face, or furthest along "+Z"
 ob.edge(which)  # Path along the edges named which, in the space ob is in: the longest run (as long: the one reaching furthest -X, then -Y, -Z), closed if it closes
 bbox(ob, which)  # Frame on its bounding box: a side "+X", an edge "+X-Y", a corner "+X-Y+Z"
+describe(ob)  # What it holds: size, volume, face and edge names, joints, material, parts
 local(ob, x=0, y=0, z=0, rx=0, ry=0, rz=0)  # Frame at (x, y, z) of its own space, turned (rx, ry, rz) degrees
 at(ob, x=None, y=None, z=None, rx=None, ry=None, rz=None, on=None, anchor=None)  # Place it: set what is given, keep the rest; anchor: "-Z", "+Y-Z"…
 transform(ob, x=0, y=0, z=0, rx=0, ry=0, rz=0, mirror=None)  # Move it by, as a parent would; its placement, not its mesh

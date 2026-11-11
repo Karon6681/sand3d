@@ -66,6 +66,7 @@ dent(ob, points, r, depth)  <span class="c"># Press hollows at points</span></pr
 ob.face(which)  <span class="c"># Frame of a named face, or furthest along &quot;+Z&quot;</span>
 ob.edge(which)  <span class="c"># Path along the edges named which, in the space ob is in: the longest run (as long: the one reaching furthest -X, then -Y, -Z), closed if it closes</span>
 bbox(ob, which)  <span class="c"># Frame on its bounding box: a side &quot;+X&quot;, an edge &quot;+X-Y&quot;, a corner &quot;+X-Y+Z&quot;</span>
+describe(ob)  <span class="c"># What it holds: size, volume, face and edge names, joints, material, parts</span>
 local(ob, x=<span class="n">0</span>, y=<span class="n">0</span>, z=<span class="n">0</span>, rx=<span class="n">0</span>, ry=<span class="n">0</span>, rz=<span class="n">0</span>)  <span class="c"># Frame at (x, y, z) of its own space, turned (rx, ry, rz) degrees</span>
 at(ob, x=<span class="k">None</span>, y=<span class="k">None</span>, z=<span class="k">None</span>, rx=<span class="k">None</span>, ry=<span class="k">None</span>, rz=<span class="k">None</span>, on=<span class="k">None</span>, anchor=<span class="k">None</span>)  <span class="c"># Place it: set what is given, keep the rest; anchor: &quot;-Z&quot;, &quot;+Y-Z&quot;…</span>
 transform(ob, x=<span class="n">0</span>, y=<span class="n">0</span>, z=<span class="n">0</span>, rx=<span class="n">0</span>, ry=<span class="n">0</span>, rz=<span class="n">0</span>, mirror=<span class="k">None</span>)  <span class="c"># Move it by, as a parent would; its placement, not its mesh</span>
@@ -214,6 +215,7 @@ Frame(origin=(0, 0, 0), normal=(0, 0, 1), up=None)  # A place to build on
 ob.face(which)  # Frame of a named face, or furthest along &quot;+Z&quot;
 ob.edge(which)  # Path along the edges named which, in the space ob is in: the longest run (as long: the one reaching furthest -X, then -Y, -Z), closed if it closes
 bbox(ob, which)  # Frame on its bounding box: a side &quot;+X&quot;, an edge &quot;+X-Y&quot;, a corner &quot;+X-Y+Z&quot;
+describe(ob)  # What it holds: size, volume, face and edge names, joints, material, parts
 local(ob, x=0, y=0, z=0, rx=0, ry=0, rz=0)  # Frame at (x, y, z) of its own space, turned (rx, ry, rz) degrees
 at(ob, x=None, y=None, z=None, rx=None, ry=None, rz=None, on=None, anchor=None)  # Place it: set what is given, keep the rest; anchor: &quot;-Z&quot;, &quot;+Y-Z&quot;…
 transform(ob, x=0, y=0, z=0, rx=0, ry=0, rz=0, mirror=None)  # Move it by, as a parent would; its placement, not its mesh

@@ -406,6 +406,50 @@ def bbox(ob, which):
     return Frame(origin, normal)._read_on(root, root.matrix_basis)
 
 
+def describe(ob):
+    """What it holds: size, volume, face and edge names, joints, material, parts.
+
+    A dict a program can print or a model can read before its next verb: the bounding
+    box `ob` and everything under it span in the space it is in, and for a solid its
+    volume, how many edges are open (0 for a closed solid), and every face and edge name
+    it carries with how many faces or edges hold it (and the faces' area). A name is
+    given as `face` and `edge` read it. Then the joints the part hangs by, the material
+    it wears, and the same for each part under it. Lengths are in the program's unit."""
+    from . import joints, materials
+    from .assembly import Handle
+    ob = ob.root if isinstance(ob, Handle) else ob
+    if not isinstance(ob, bpy.types.Object):
+        raise TypeError(f"describe: a part, a group or an assembly is expected, not {type(ob).__name__}")
+    pts = _placed_points(ob)
+    lo = [min(p[k] for p in pts) for k in range(3)] if pts else [0.0] * 3
+    hi = [max(p[k] for p in pts) for k in range(3)] if pts else [0.0] * 3
+    out = {"name": _core.given_name(ob), "bbox": [lo, hi], "size": [b - a for a, b in zip(lo, hi)]}
+    if ob.type == "MESH":
+        me = ob.data
+        bm = bmesh.new()
+        bm.from_mesh(me)
+        bm.transform(ob.matrix_basis)
+        out["volume"] = bm.calc_volume(signed=True)
+        out["open_edges"] = sum(len(e.link_faces) != 2 for e in bm.edges)
+        bm.free()
+        areas = [p.area for p in me.polygons]
+        out["faces"], out["edges"] = {}, {}
+        for att in me.attributes:
+            for prefix, key in ((_core.FACE_TAG, "faces"), (_core.EDGE_TAG, "edges")):
+                held = [v.value for v in att.data] if att.name.startswith(prefix) else []
+                if any(held):
+                    name = att.name[len(prefix):]
+                    out[key][name] = {"count": sum(held)} if key == "edges" else {
+                        "count": sum(held), "area": sum(a for a, v in zip(areas, held) if v)}
+    parent = joints.parent_of(ob)
+    out["joints"] = [{"name": j["name"], "kind": j["kind"], "on": _core.given_name(parent)}
+                     for j in joints.joints_of(ob)]
+    tag = materials._nearest(ob)
+    out["material"] = materials._name(tag) if tag else None
+    out["parts"] = [describe(c) for c in sorted(ob.children, key=_core.given_name)]
+    return out
+
+
 def local(ob, x=0, y=0, z=0, rx=0, ry=0, rz=0):
     """Frame at (x, y, z) of its own space, turned (rx, ry, rz) degrees.
 
