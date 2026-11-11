@@ -1875,14 +1875,21 @@ def _refine(bm, size, name):
     bm.verts.index_update()
     bm.edges.index_update()
     cuts = {}
+    # A factor-two margin covers float32 edge lengths versus the double
+    # lengths in _rows. Restrict the shortcut to normal squared float32
+    # magnitudes, so underflow cannot make a long edge look short.
+    already_fine = 1e-15 <= longest <= 1e15
     for e in bm.edges:
         length = e.calc_length()
         cuts[e] = max(1, math.ceil(length / longest)) if math.isfinite(length) else 1
+        already_fine = already_fine and length <= longest / 2
+    if already_fine:
+        return
     plans, added = [], 0
     faces = list(bm.faces)
     for k, f in enumerate(faces):
         corners = list(f.verts)
-        sides = [cuts[bm.edges.get((corners[i], corners[(i + 1) % len(corners)]))] for i in range(len(corners))]
+        sides = [cuts[loop.edge] for loop in f.loops]
         rows = _rows(corners, sides, longest) if len(corners) == 3 else []
         inside = sum(n - 1 for *_, n in rows)
         boundary = sum(sides)
@@ -1916,11 +1923,15 @@ def _rows(corners, sides, longest):
     them), as many as its height over that side asks, each cut as its own length asks —
     about one point per longest² of area, however long and thin the triangle. The points
     are the row's inner cuts. In double precision."""
-    k = max(range(3), key=lambda i: (sides[i], -i))
+    k = 0 if sides[0] >= sides[1] and sides[0] >= sides[2] else (1 if sides[1] >= sides[2] else 2)
     a, b, c = (tuple(corners[(k + i) % 3].co) for i in range(3))
     ab = [q - p for p, q in zip(a, b)]
-    ac = [q - p for p, q in zip(a, c)]
     base = math.sqrt(sum(x * x for x in ab))
+    # Every row is shorter than the base. With at most one piece it has no
+    # interior point, whatever the height; omit these empty rows altogether.
+    if base <= longest:
+        return []
+    ac = [q - p for p, q in zip(a, c)]
     cross = (ab[1] * ac[2] - ab[2] * ac[1], ab[2] * ac[0] - ab[0] * ac[2], ab[0] * ac[1] - ab[1] * ac[0])
     if not base or not all(math.isfinite(x) for x in cross):
         return []
