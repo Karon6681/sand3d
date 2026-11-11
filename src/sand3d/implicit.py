@@ -8,21 +8,16 @@ from . import _core
 from .edit import NOISES
 
 
-def _hash(x, y, z, seed):
-    # Integer mixer using explicitly wrapping 32-bit arithmetic.
+def _mix(h, seed):
+    # Own the buffer: callers share the coordinate products across neighbours.
+    h = np.asarray(h ^ np.uint32(seed & 0xFFFFFFFF), dtype=np.uint32)
     with np.errstate(over="ignore"):
-        h = (
-            x.astype(np.uint32) * np.uint32(1597334677)
-            ^ y.astype(np.uint32) * np.uint32(3812015801)
-            ^ z.astype(np.uint32) * np.uint32(2798796415)
-            ^ np.uint32(seed & 0xFFFFFFFF)
-        )
-        h = np.asarray(h, dtype=np.uint32)
         h ^= h >> np.uint32(16)
         h *= np.uint32(2246822519)
         h ^= h >> np.uint32(13)
         h *= np.uint32(3266489917)
-        return h ^ (h >> np.uint32(16))
+        h ^= h >> np.uint32(16)
+    return h
 
 
 def noise(x, y, z, seed=0, kind="perlin"):
@@ -40,29 +35,38 @@ def noise(x, y, z, seed=0, kind="perlin"):
         raise ValueError("noise: coordinates must be finite and within 2**50")
     base = [np.floor(a).astype(np.int64) for a in q]
     frac = [a - b for a, b in zip(q, base)]
+    steps = (-1, 0, 1) if kind == "cells" else (0, 1)
+    with np.errstate(over="ignore"):
+        products = [
+            {d: (b.astype(np.uint32) + np.uint32(d & 0xFFFFFFFF)) * np.uint32(k)
+             for d in steps}
+            for b, k in zip(base, (1597334677, 3812015801, 2798796415))
+        ]
     if kind == "cells":
         distance = np.full(q[0].shape, np.inf)
         for delta in itertools.product((-1, 0, 1), repeat=3):
-            b = [a + d for a, d in zip(base, delta)]
+            hashed = products[0][delta[0]] ^ products[1][delta[1]] ^ products[2][delta[2]]
             dist = np.zeros(q[0].shape)
             for c in range(3):
                 offset = (
-                    _hash(*b, seed + 1013 * (c + 1)).astype(np.float64) / 4294967296
+                    _mix(hashed, seed + 1013 * (c + 1)).astype(np.float64) / 4294967296
                 )
                 dist += (delta[c] + offset - frac[c]) ** 2
-            distance = np.minimum(distance, dist)
+            np.minimum(distance, dist, out=distance)
         result = 1 - 2 * np.minimum(1, np.sqrt(distance) / math.sqrt(3))
     else:
         fade = [f * f * f * (f * (f * 6 - 15) + 10) for f in frac]
         result = np.zeros(q[0].shape)
         for corner in itertools.product((0, 1), repeat=3):
-            h = _hash(*[b + d for b, d in zip(base, corner)], seed)
+            h = _mix(products[0][corner[0]] ^ products[1][corner[1]] ^ products[2][corner[2]], seed)
             # Twelve edge directions of the cube, constructed without a table.
             axis = h % 3
             dot = np.zeros(q[0].shape)
             for c in range(3):
-                sign = np.where((h >> (c + 3)) & 1, 1.0, -1.0)
-                dot += np.where(axis == c, 0.0, sign * (frac[c] - corner[c]))
+                term = np.asarray(frac[c] - corner[c])
+                np.negative(term, out=term, where=((h >> (c + 3)) & 1) == 0)
+                np.copyto(term, 0.0, where=axis == c)
+                dot += term
             weight = np.ones(q[0].shape)
             for c in range(3):
                 weight *= fade[c] if corner[c] else 1 - fade[c]
