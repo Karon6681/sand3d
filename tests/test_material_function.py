@@ -48,6 +48,20 @@ class MaterialFunction(unittest.TestCase):
                 for actual, expected in zip(a.data.color_attributes['Colour'].data[i].color, color):
                     self.assertAlmostEqual(actual, expected, places=7)
 
+    def test_face_u_matches_scalar_sum(self):
+        from sand3d._coordinates import face_u, NAMES
+        a = s3d.cone('a', 20, 50)
+        mesh = a.data
+        s, e = (mesh.attributes[n] for n in (NAMES[0], NAMES[-1]))
+        def reference():
+            return [sum(s.data[i].value/e.data[i].value if e.data[i].value else float('nan')
+                        for i in f.vertices)/len(f.vertices) for f in mesh.polygons]
+        self.assertEqual(face_u(mesh), reference())
+        e.data[0].value = 0
+        import math
+        for actual, expected in zip(face_u(mesh), reference()):
+            self.assertTrue(math.isnan(actual) if math.isnan(expected) else actual == expected)
+
     def test_examples(self):
         a = s3d.loft('limb', *(s3d.station(z, 20, 20) for z in (0, 80, 160, 240)))
         s3d.material(a, 'plastic', color=lambda x,y,z: '#c9a137' if int(z//80)%2 else '#2c2d33')
