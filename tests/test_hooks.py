@@ -61,3 +61,27 @@ class Hooks(unittest.TestCase):
         before = state()
         _core.shade_meshes()
         self.assertEqual(before, state())
+
+    def test_hooks_do_not_traverse_unchanged_scene_collections(self):
+        from types import SimpleNamespace
+        s3d.material(s3d.box('seed', 1, 1, 1), 'oak')
+        visits = []
+        class Collection:
+            def __init__(self, source):
+                self.source = source
+            def __getattr__(self, name):
+                return getattr(self.source, name)
+            def __iter__(self):
+                for item in self.source:
+                    visits.append(item)
+                    yield item
+        class Data:
+            objects = Collection(bpy.data.objects)
+            meshes = Collection(bpy.data.meshes)
+            def __getattr__(self, name):
+                return getattr(bpy.data, name)
+        proxy = SimpleNamespace(data=Data(), types=bpy.types, context=bpy.context)
+        with patch.object(materials, 'bpy', proxy), patch.object(_core, 'bpy', proxy):
+            for i in range(80):
+                s3d.smooth(s3d.box(f'part{i}', 1, 1, 1))
+        self.assertEqual(visits, [])
