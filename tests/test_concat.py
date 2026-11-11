@@ -80,3 +80,21 @@ class Concat(unittest.TestCase):
         for prop in ('loop_start', 'loop_total'):
             result.append(edit._mesh_array(mesh.polygons, prop).tobytes())
         return result
+
+    def test_add_tags_keeps_existing_layers_and_marks_empty_edges(self):
+        from sand3d import _core
+        bm = bmesh.new()
+        try:
+            vertices = [bm.verts.new(co) for co in ((0, 0, 0), (1, 0, 0), (0, 1, 0))]
+            bm.faces.new(vertices)
+            original = bm.faces.layers.bool.new('s3d_face:z')
+            _core.add_tags(bm, {0: {'z', 'a'}}, {0: set(), 1: {'rim'}})
+            self.assertEqual([l.name for l in bm.faces.layers.bool.values()], ['s3d_face:z', 's3d_face:a'])
+            self.assertTrue(bm.faces[0][original])
+            self.assertTrue(bm.faces[0][bm.faces.layers.bool['s3d_face:a']])
+            self.assertFalse(bm.edges[0].smooth)
+            self.assertFalse(bm.edges[1].smooth)
+            self.assertTrue(bm.edges[2].smooth)
+            self.assertTrue(bm.edges[1][bm.edges.layers.bool['s3d_edge:rim']])
+        finally:
+            bm.free()

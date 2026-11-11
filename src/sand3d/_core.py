@@ -451,22 +451,25 @@ def segments(r, sweep=360.0):
 def add_tags(bm, face_add, edge_add):
     """Add names to elements of `bm` by index: {face index: tags}, {edge index: tags}.
     Edges that gain a name become sharp."""
-    for t in sorted({t for tags in face_add.values() for t in tags}):
-        if bm.faces.layers.bool.get(tag_key(FACE_TAG, t)) is None:
-            bm.faces.layers.bool.new(tag_key(FACE_TAG, t))
-    for t in sorted({t for tags in edge_add.values() for t in tags}):
-        if bm.edges.layers.bool.get(tag_key(EDGE_TAG, t)) is None:
-            bm.edges.layers.bool.new(tag_key(EDGE_TAG, t))
+    layers = []
+    for domain, prefix, additions in ((bm.faces, FACE_TAG, face_add), (bm.edges, EDGE_TAG, edge_add)):
+        resolved = {}
+        for tag in sorted({t for tags in additions.values() for t in tags}):
+            key = tag_key(prefix, tag)
+            layer = domain.layers.bool.get(key)
+            resolved[tag] = layer if layer is not None else domain.layers.bool.new(key)
+        layers.append(resolved)
+    face_layers, edge_layers = layers
     bm.faces.ensure_lookup_table()
     bm.edges.ensure_lookup_table()
     for i, tags in face_add.items():
         f = bm.faces[i]
         for t in tags:
-            f[bm.faces.layers.bool[tag_key(FACE_TAG, t)]] = True
+            f[face_layers[t]] = True
     for i, tags in edge_add.items():
         e = bm.edges[i]
         for t in tags:
-            e[bm.edges.layers.bool[tag_key(EDGE_TAG, t)]] = True
+            e[edge_layers[t]] = True
         e.smooth = False
     bm.normal_update()
 
