@@ -112,6 +112,12 @@ class Frames(unittest.TestCase):
         self.assertTrue(close(hits[0].origin, (0, -25, 100)) and close(hits[0].normal, (0, -1, 0)))
         near = s3d.snap(body, [(0, 0, 200)])
         self.assertTrue(close(near[0].origin, (0, 0, 125)) and close(near[0].normal, (0, 0, 1)))
+        inside = s3d.snap(body, [(0, 0, 110)])
+        self.assertTrue(close(inside[0].origin, (0, 0, 125)) and close(inside[0].normal, (0, 0, 1)),
+                        "from inside, the normal still points out of the solid")
+        through = s3d.snap(body, [(0, 0, 75)], direction=(0, 1, 0))
+        self.assertTrue(close(through[0].origin, (0, 25, 75)) and close(through[0].normal, (0, 1, 0)),
+                        "a line from inside meets the far wall, its normal out of the solid")
 
 
 if __name__ == "__main__":

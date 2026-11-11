@@ -218,7 +218,7 @@ def write_usda(root, path):
         if key is None or body is not None:              # between two joints of one child: no geometry
             for ob in mech.meshes(body):
                 name = mech.names.visual(_core.given_name(ob))
-                tag = materials._nearest(ob)
+                tag = materials.mean_tag(ob)
                 if tag is not None and tag not in looks:
                     looks[tag] = f"/{top}/Looks/{mech.names.unique('look', materials._name(tag))}"
                 _mesh(out, name, ob, _mul(_inv(F), _d(k.rest_world(ob))), unit, looks.get(tag))

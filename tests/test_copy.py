@@ -19,6 +19,20 @@ class Copy(unittest.TestCase):
     def setUp(self):
         s3d.empty_scene()
 
+    def test_a_list_is_copied_element_by_element(self):
+        """A list is worth its elements: `copy([a, b])` raised AttributeError on the list."""
+        base = s3d.box("base", 40, 40, 10)
+        arm = s3d.at(s3d.box("arm", 10, 10, 30), z=10)
+        s3d.joint("hinge", arm, base.face("top"), axis="+X", range=(0, 90))
+        copies = s3d.copy([base, [arm]])
+        self.assertEqual([c["s3d_name"] for c in copies], ["base", "arm"])
+        self.assertTrue(all(c is not o for c, o in zip(copies, (base, arm))))
+        self.assertEqual([mesh_of(c) for c in copies], [mesh_of(base), mesh_of(arm)])
+        from sand3d.joints import parent_of
+        self.assertIs(parent_of(copies[1]), copies[0], "the arm's copy hangs on the base's copy")
+        self.assertIs(parent_of(arm), base, "the originals are untouched")
+        self.assertEqual(s3d.copy([]), [])
+
     def test_same_mesh_names_and_placement(self):
         plate = s3d.at(s3d.extrude("plate", s3d.rect(40, 20, r=3), 5), x=10, z=4, rz=30)
         s3d.hole(plate, 4, on=(5, 0))

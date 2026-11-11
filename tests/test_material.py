@@ -217,6 +217,64 @@ class Mistakes(unittest.TestCase):
         self.message(self.box, "plastic", opacity=2)
         self.assertNotIn(materials.TAG, self.box)
 
+class Nature(unittest.TestCase):
+    def setUp(self):
+        s3d.empty_scene()
+
+    kinds = ('bark', 'leaf', 'moss', 'grass', 'rock', 'soil', 'sand', 'water', 'snow')
+
+    def test_nature_exports_and_tints(self):
+        for kind in self.kinds:
+            for color in (None, '#778899'):
+                with self.subTest(kind=kind, color=color):
+                    s3d.empty_scene()
+                    ob = s3d.material(s3d.box('sample', 10, 10, 10), kind, color=color)
+                    v = materials.look(ob[materials.TAG])
+                    name = kind + (' #778899' if color else '')
+                    self.assertEqual(worn(ob), [name])
+                    self.assertEqual(v['color'], color or materials.PRESETS[kind]['color'])
+                    doc, _ = export(ob)
+                    mat = doc['materials'][0]
+                    self.assertEqual(mat['name'], name)
+                    pbr = mat['pbrMetallicRoughness']
+                    self.assertAlmostEqual(pbr.get('roughnessFactor', 1), v['roughness'])
+                    self.assertEqual(pbr.get('metallicFactor', 1), 0)
+                    for i, c in enumerate(materials._linear(v['color'])[:3]):
+                        self.assertAlmostEqual(pbr['baseColorFactor'][i], c, places=6)
+                    for key, ext, factor in [('transmission', 'transmission', 'transmissionFactor'),
+                                             ('coat', 'clearcoat', 'clearcoatFactor')]:
+                        if v[key]:
+                            self.assertAlmostEqual(mat['extensions']['KHR_materials_'+ext][factor], v[key])
+                    if v['sheen']:
+                        self.assertIn('KHR_materials_sheen', mat['extensions'])
+                    with tempfile.TemporaryDirectory() as tmp:
+                        path = Path(tmp) / 'sample.usda'
+                        s3d.export(ob, path)
+                        text = path.read_text()
+                        self.assertIn('float inputs:roughness = '+str(v['roughness']).rstrip('0').rstrip('.'), text)
+                        self.assertIn('float inputs:opacity = '+str(1-v['transmission']).rstrip('0').rstrip('.'), text)
+                        self.assertNotIn('inputs:sheen', text)
+                        if v['coat']:
+                            self.assertIn('float inputs:clearcoat = '+str(v['coat']), text)
+
+    def test_nature_suggestions(self):
+        for typo, kind in [('barrk', 'bark'), ('watr', 'water'), ('snoow', 'snow')]:
+            with self.assertRaisesRegex(ValueError, "did you mean.*'"+kind+"'"):
+                s3d.material(s3d.box('sample', 1, 1, 1), typo)
+
+    def test_nature_in_fresh_processes(self):
+        import subprocess
+        import sys
+        code = '''import sand3d as s
+from sand3d import materials as m
+for kind in ('bark','leaf','moss','grass','rock','soil','sand','water','snow'):
+ ob=s.material(s.box(kind,1,1,1),kind,color='#778899')
+ print('@@nature', kind, m.look(ob[m.TAG]), ob.data.materials[0].name, flush=True)
+import os; os._exit(0)
+'''
+        outputs = [subprocess.run([sys.executable, '-c', code], check=True, capture_output=True).stdout for _ in range(2)]
+        self.assertEqual(*[[line for line in output.splitlines() if line.startswith(b'@@nature')] for output in outputs])
+
 
 if __name__ == "__main__":
     unittest.main()

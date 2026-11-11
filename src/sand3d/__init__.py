@@ -13,15 +13,17 @@ import sys
 
 from . import _core, _guard
 
-from .assembly import Handle, assembly, attach, empty_scene, export, group, units
-from .edit import (chamfer, copy, cut, delete, dent, fillet, hole, intersect, join, merge, pocket, scale, seat, shell,
-                   soften, split)
+from .assembly import Handle, assembly, attach, empty_scene, export, group, units, facets
+from .edit import (bend, blend, chamfer, copy, cut, delete, dent, displace, fillet, hole, intersect, join, merge,
+                   pocket, scale, seat, lay, shell, soften, split, taper, twist)
+from .shade import smooth
+from .implicit import field, noise
 from .parts import gear, knurl, thread
-from .frames import Frame, along, at, bbox, grid, local, ring, snap, transform
+from .frames import Frame, Frames, along, at, bbox, grid, local, ring, phyllotaxis, branches, vary, scatter, snap, transform
 from .materials import material, resolve as _resolve
 from .joints import joint, placed_again as _placed_again, placed_on as _placed_on, pose
 from .profile import Path as _Path, Placed as _Placed, arc, circle, ellipse, mirror, offset, poly, polygon, rect, slot, spline, station, stroke, superellipse, tangent_arc, text, wrap
-from .solids import body, box, cone, cylinder, dome, extrude, helix, loft, revolve, sphere, sweep, torus, tube, wedge, wire
+from .solids import body, box, cone, cylinder, dome, extrude, helix, hull, loft, revolve, sphere, spiral, sweep, torus, tube, wedge, wire
 
 # x-release-please-start-version
 __version__ = "1.6.3"
@@ -32,21 +34,21 @@ __all__ = [
     "rect", "circle", "ellipse", "slot", "polygon", "poly", "arc", "tangent_arc", "spline", "superellipse",
     "station", "text", "offset", "stroke", "wrap", "mirror",
     # solids, paths
-    "extrude", "revolve", "sweep", "loft", "body", "wire", "helix",
+    "extrude", "revolve", "sweep", "loft", "body", "hull", "field", "noise", "wire", "helix", "spiral",
     "box", "cylinder", "tube", "cone", "sphere", "wedge", "torus", "dome",
     # edits
     "cut", "join", "intersect", "split", "delete", "copy", "hole", "pocket", "merge", "scale",
-    "fillet", "chamfer", "soften", "shell", "dent",
+    "fillet", "chamfer", "soften", "shell", "dent", "lay", "blend", "displace", "bend", "twist", "taper",
     # frames, placement
-    "Frame", "bbox", "local", "at", "transform", "grid", "ring", "along", "snap",
+    "Frame", "Frames", "bbox", "local", "at", "transform", "grid", "ring", "along", "phyllotaxis", "branches", "vary", "scatter", "snap",
     # parts
     "gear", "knurl", "thread",
     # materials
-    "material",
+    "material", "smooth",
     # articulation
     "joint", "pose", "seat",
     # assembly
-    "group", "assembly", "attach", "Handle", "export", "empty_scene", "units", "fingerprint",
+    "group", "assembly", "attach", "Handle", "export", "empty_scene", "units", "fingerprint", "facets",
 ]
 
 
@@ -81,6 +83,7 @@ def _verb(fn):
                 _placed_again(result)
         if name == "transform":
             _placed_again(result)
+        _core.shade_meshes()
         return result
     return verb
 
@@ -101,7 +104,7 @@ def _placed(result, on):
 
 
 for _name in __all__:
-    if _name not in ("units", "empty_scene", "fingerprint") and not isinstance(globals()[_name], type):
+    if _name not in ("units", "empty_scene", "fingerprint", "facets") and not isinstance(globals()[_name], type):
         globals()[_name] = _verb(globals()[_name])
 del _name
 

@@ -191,9 +191,44 @@ class Builder:
 
     def __init__(self, name):
         self.name = name
+        self.parameters = {}
         self.bm = bmesh.new()
+        from ._coordinates import NAMES
+        for name in NAMES:
+            self.bm.verts.layers.float.new(name)
         self.surface = self.bm.faces.layers.int.new(SURFACE)
         self.layers = {t: self.bm.faces.layers.bool.new(tag_key(FACE_TAG, t)) for t in self.TAGS}
+
+    def lengthwise(self, rings, parameters, centres=None, lengths=None):
+        """Construction coordinates on vertices; parameters select colour progression.
+
+        Transported transverse offsets encode angle and radius without an angular seam.
+        Edits move the geometry, not its construction coordinates.
+        """
+        from .frames import Frame, _transport
+        centres = centres or [sum((v.co for v in dict.fromkeys(ring)), Vector()) / len(set(ring)) for ring in rings]
+        if lengths is None:
+            lengths = [0.]
+            for a, b in zip(centres, centres[1:]):
+                lengths.append(lengths[-1] + (b-a).length)
+        frame = None
+        layers = {name: self.bm.verts.layers.float.get(name) or self.bm.verts.layers.float.new(name)
+                  for name in ('.s3d_s', '.s3d_x', '.s3d_y', '.s3d_extent')}
+        self.bm.verts.index_update()
+        self.parameters = {v.index: u for ring, u in zip(rings, parameters) for v in ring}
+        for i, (ring, u, centre, distance) in enumerate(zip(rings, parameters, centres, lengths)):
+            tangent = centres[min(i+1,len(centres)-1)] - centres[max(0,i-1)]
+            if tangent.length < 1e-10:
+                tangent = Vector((0,0,1))
+            tangent.normalize()
+            frame = Frame(centre, tangent) if frame is None else _transport(frame, centre, tangent)
+            for v in dict.fromkeys(ring):
+                offset = v.co-centre
+                x,y = offset.dot(frame.x),offset.dot(frame.y)
+                values = (distance, x, y,
+                          distance/u if u else (lengths[-1] or 1.))
+                for name,value in zip(layers,values):
+                    v[layers[name]] = value
 
     def vert(self, co):
         return self.bm.verts.new(co)
@@ -226,6 +261,10 @@ class Builder:
         """The object. `rim`: every real edge also takes `kind`, save those bounding a
         start or end cap (a revolve's circles are rims whatever faces they bound)."""
         bm, name = self.bm, self.name
+        if not self.parameters:
+            from ._coordinates import NAMES
+            for label in NAMES:
+                bm.verts.layers.float.remove(bm.verts.layers.float[label])
         bm.faces.index_update()
         bm.edges.index_update()
         face_tags = [{t for t, lay in self.layers.items() if f[lay]} for f in bm.faces]
@@ -311,15 +350,27 @@ def bridge(bm, a, b):
 #: Chord tolerance of every circle and arc, in millimetres, and the bounds on the
 #: number of segments a full turn gets: a circle up to 10 mm gets 24, of 30 mm 39,
 #: and anything from 84 mm the cap. A function of the radius in millimetres only, so a
-#: verb's mesh depends on nothing but its arguments and the unit.
+#: verb's mesh depends on nothing but its arguments, the unit and the facets.
 CHORD = 0.05
 TURN_MIN, TURN_MAX = 24, 64
+#: Segments of a full turn the program set with `facets`, the same for every radius; None: by
+#: the chord tolerance above.
+FACETS = None
+FACET_SMOOTH = False
+FACET_CONFIGURED = False
+
+
+def surface_edge(size):
+    """Fixed-count target for an axisless surface; size is its local box extent."""
+    return math.pi * max(size) / FACETS if FACETS is not None else 0.0
 
 
 def segments(r, sweep=360.0):
     """How many straight pieces an arc of radius `r` sweeping `sweep` degrees gets."""
     r = abs(in_mm(r))
-    if r <= CHORD:
+    if FACETS is not None:
+        per_turn = FACETS
+    elif r <= CHORD:
         per_turn = TURN_MIN
     else:
         per_turn = math.ceil(math.pi / math.acos(1 - CHORD / r))
@@ -348,3 +399,106 @@ def add_tags(bm, face_add, edge_add):
             e[bm.edges.layers.bool[tag_key(EDGE_TAG, t)]] = True
         e.smooth = False
     bm.normal_update()
+
+
+class Law:
+    """A checked, shape-preserving cubic law on [0, 1], scalar or two-dimensional."""
+
+    def __init__(self, points, name="law", pairs=True):
+        import bisect
+        self._bisect = bisect.bisect_right
+        message = f"{name}: a law is (u, value) pairs, strictly increasing from 0 to 1, with finite numbers"
+        try:
+            rows = list(points)
+            self.u = [float(u) for u, v in rows]
+            self.pair = isinstance(rows[0][1], (list, tuple))
+            if self.pair and not pairs:
+                raise ValueError(message)
+            values = []
+            for u, v in rows:
+                if isinstance(v, (list, tuple)) != self.pair or (self.pair and len(v) != 2):
+                    raise ValueError(message + "; do not mix scalars and pairs")
+                values.append(tuple(float(x) for x in v) if self.pair else (float(v),))
+            if (len(rows) < 2 or self.u[0] != 0 or self.u[-1] != 1
+                    or any(a >= b for a, b in zip(self.u, self.u[1:]))
+                    or not all(math.isfinite(x) for x in self.u + [x for v in values for x in v])):
+                raise ValueError(message)
+        except (TypeError, ValueError, IndexError) as e:
+            raise ValueError(message) from e
+        self.values = values
+        h = [b - a for a, b in zip(self.u, self.u[1:])]
+        self.slopes = []
+        for k in range(len(values[0])):
+            delta = [(b[k] - a[k]) / step for a, b, step in zip(values, values[1:], h)]
+            if len(delta) == 1:
+                slopes = delta * 2
+            else:
+                def end(h0, h1, d0, d1):
+                    m = ((2 * h0 + h1) * d0 - h0 * d1) / (h0 + h1)
+                    return 0.0 if m * d0 <= 0 else math.copysign(min(abs(m), 3 * abs(d0)), d0)
+                slopes = [end(h[0], h[1], delta[0], delta[1])]
+                for i in range(1, len(delta)):
+                    a, b = delta[i - 1:i + 1]
+                    w1, w2 = 2 * h[i] + h[i - 1], h[i] + 2 * h[i - 1]
+                    slopes.append((w1 + w2) / (w1 / a + w2 / b) if a * b > 0 else 0.0)
+                slopes.append(end(h[-1], h[-2], delta[-1], delta[-2]))
+            self.slopes.append(slopes)
+
+    def __call__(self, u):
+        i = min(max(self._bisect(self.u, u) - 1, 0), len(self.u) - 2)
+        h = self.u[i + 1] - self.u[i]
+        t = min(1.0, max(0.0, (u - self.u[i]) / h))
+        out = tuple((2*t**3 - 3*t*t + 1)*self.values[i][k]
+                    + (t**3 - 2*t*t + t)*h*m[i]
+                    + (-2*t**3 + 3*t*t)*self.values[i + 1][k]
+                    + (t**3 - t*t)*h*m[i + 1] for k, m in enumerate(self.slopes))
+        return out if self.pair else out[0]
+
+
+#: Object property: the angle in degrees past which a part's edges stay sharp (`smooth`).
+SHADE = "s3d~smooth"
+#: Edge attribute: edges their maker keeps sharp on a part shaded smooth, whatever the angle.
+CREASE = "s3d~crease"
+
+
+def shade_meshes():
+    """Enforce program shading after a verb, including rebuilt meshes: flat under a fixed
+    facet count, and by its own angle for a part `smooth` shaded."""
+    own = {ob.data.as_pointer(): ob[SHADE] for ob in bpy.data.objects if ob.type == "MESH" and SHADE in ob}
+    flat = FACETS is not None and not FACET_SMOOTH
+    if not own and not flat:
+        return
+    kept = {ob.data.as_pointer() for ob in bpy.data.objects if ob.type == "MESH" and ob.get("s3d~merged.shading")}
+    for mesh in bpy.data.meshes:
+        if mesh.as_pointer() in kept:
+            continue
+        angle = own.get(mesh.as_pointer())
+        if angle is not None:
+            mesh.polygons.foreach_set("use_smooth", [angle > 0] * len(mesh.polygons))
+            mesh.set_sharp_from_angle(angle=math.radians(angle))
+            crease = mesh.attributes.get(CREASE)
+            if crease is not None and angle > 0 and len(crease.data) == len(mesh.edges):
+                forced = [False] * len(mesh.edges)
+                crease.data.foreach_get("value", forced)
+                sharp = mesh.attributes.get("sharp_edge") or mesh.attributes.new("sharp_edge", "BOOLEAN", "EDGE")
+                now = [False] * len(mesh.edges)
+                sharp.data.foreach_get("value", now)
+                sharp.data.foreach_set("value", [a or b for a, b in zip(now, forced)])
+        elif flat:
+            mesh.polygons.foreach_set("use_smooth", [False] * len(mesh.polygons))
+
+
+def turn_steps(paths):
+    """Pieces for the greatest accumulated meridian turn in dense probe paths.
+
+    The probes estimate curvature only; the caller evaluates the original curve
+    again at the chosen parameters, retaining its interpolation stations.
+    """
+    turn = 0.0
+    for path in paths:
+        chords = [b - a for a, b in zip(path, path[1:])]
+        directions = [v.normalized() for v in chords if v.length > 1e-10]
+        angle = sum(math.atan2(a.cross(b).length, a.dot(b))
+                    for a, b in zip(directions, directions[1:]))
+        turn = max(turn, angle)
+    return max(1, math.ceil(FACETS * turn / (2 * math.pi) - 1e-4))

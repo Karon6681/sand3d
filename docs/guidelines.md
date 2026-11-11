@@ -438,3 +438,48 @@ and to `s3d.joint(name, child, f, …)`.
 ```python
     s3d.joint("door_hinge", door, f, kind="revolute", axis="-Z", range=(0, 114.59))
 ```
+
+
+## Lateral organs on a curved stem
+
+`along` faces Z along the stem tangent; cylindrical `phyllotaxis` faces Z radially.
+For leaves, fronds or branches, spin around the tangent **before** leaning away:
+`turn(ry=60)` sets the departure angle to 60° from the tangent. Build each organ
+from its base at the origin along its own +Z. Angular jitter keeps that base attached;
+position jitter would detach it. `vary(24, 5, ...)` gives lengths in [19, 29], with an
+**absolute** spread of 5 program units.
+
+The complete renderable recipe is [examples/curved_stem.py](examples/curved_stem.py):
+
+```python
+frames = s3d.along(path, count=13, spin=137.508, span=(.12, .92))
+frames = frames.turn(ry=60).jitter(rx=5, ry=8, rz=12, seed=2)
+lengths = s3d.vary(24, 5, len(frames), seed=3)
+leaves = [s3d.at(leaf_part(f"leaf{k}", length), on=frame)
+          for k, (frame, length) in enumerate(zip(frames, lengths))]
+```
+
+Here `leaf_part` sweeps an ellipse along local +Z, with a scale law
+`[(0, 0), (.35, 1), (1, 0)]`: the first pole is exactly the attachment point.
+
+### Array densities
+
+Programs may import numpy, shipped with bpy. For the fast path, `field` calls the
+same deterministic density with three float64 arrays of identical shape, in the
+part frame and program units; return an ndarray of that shape. Use `np.sqrt`,
+`np.sin`, `np.minimum` and `np.maximum` instead of scalar math and Python min/max.
+A small trial call selects this path. TypeError, ValueError or a non-array result
+selects scalar evaluation for plain Python callbacks. Callbacks must be pure:
+trial calls and sampling order are not part of the contract.
+
+`s3d.noise` accepts scalars and broadcastable arrays and returns a float or a
+float64 array of the broadcast shape. Its seeded gradient noise and
+nearest-cell noise stay in [-1,1], reproducible across runs and platforms.
+Ridged and turbulence transform gradient noise. Coordinates are dimensionless,
+finite and within 2**50. This realization differs from `displace`, which retains
+its existing noise to preserve existing geometry.
+
+`field` drops disconnected components whose longest bounding-box extent is less
+than `min_component_cells * cell` (default 3). The largest component is always
+kept; `min_component_cells=0` keeps every component. The filter removes complete
+closed shells, never individual faces. Thin connected features remain.

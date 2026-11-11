@@ -85,6 +85,7 @@ models can share one. Do not use them to track parts across exports.
 
 Python 3.13 (recommended) or 3.11. Blender comes with it, as the `bpy` module: 5.2 LTS on
 Python 3.13, 4.5 LTS on Python 3.11; CI runs bpy 5.2.
+NumPy ships with the `bpy` dependency; no other dependency is needed.
 
 ```bash
 pip install sand3d        # or, in a uv project: uv add sand3d

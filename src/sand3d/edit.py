@@ -15,20 +15,23 @@ coplanar faces loses its names.
 """
 import bisect
 import math
+import random
 import warnings
 from copy import deepcopy
 
 import bpy
 import bmesh
+import numpy as np
 from mathutils import Matrix, Vector
+from mathutils import noise as fields
 from mathutils.bvhtree import BVHTree
 from mathutils.kdtree import KDTree
 
 from . import _core, _guard
-from .frames import Frame, frames_of
+from .frames import _DIRECTION, Frame, frames_of
 from .joints import refuse_using_up
 from .profile import Path, Placed, Profile, poly
-from .solids import _drawing, extrude, revolve
+from .solids import _cap, _drawing, extrude, revolve
 
 OPERAND = "s3d~operand"
 #: Custom property marking an object `merge` made: its shells may overlap.
@@ -97,6 +100,7 @@ def _solve(base_mesh, tool_meshes, operation, self_intersect):
     bmesh.ops.remove_doubles(bm, verts=bm.verts, dist=_core.mm(WELD))
     bmesh.ops.dissolve_degenerate(bm, dist=_core.mm(WELD), edges=bm.edges)
     _drop_duplicates(bm)
+    _drop_tessellation_duplicates(bm)
     return bm
 
 
@@ -127,11 +131,21 @@ def _operands(ob, tools, strip):
     """`ob`'s mesh and the tools' meshes in `ob`'s frame, each face marked with its operand."""
     to_local = _core.world(ob).inverted()
     base_mesh = ob.data.copy()
+    from ._coordinates import NAMES
+    coordinates = any(NAMES[0] in part.data.attributes for part in (ob,*tools))
+    def missing(mesh):
+        if coordinates:
+            for name in NAMES:
+                if name not in mesh.attributes:
+                    attr = mesh.attributes.new(name, 'FLOAT', 'POINT')
+                    attr.data.foreach_set('value', [float('nan')]*len(mesh.vertices))
+    missing(base_mesh)
     base_mesh.attributes.new(OPERAND, "INT", "FACE")
     tool_meshes = []
     for k, tool in enumerate(tools, 1):
         rel = to_local @ _core.world(tool)
         me = _tool_mesh(tool, rel, strip)
+        missing(me)
         att = me.attributes.new(OPERAND, "INT", "FACE")
         att.data.foreach_set("value", [k] * len(me.polygons))
         reach = max(abs(c) for m in (_core.world(ob), _core.world(tool)) for c in m.translation)
@@ -353,9 +367,26 @@ def _boolean(ob, tools, operation, strip, self_intersect=False, verb="boolean", 
                       if f[lay] and "." not in lay.name[len(_core.FACE_TAG):]}
             edge_add[e.index] = {"cut", f"{name}.cut"} | set().union(*(tool_names[i - 1] for i in ids if i > 0)) \
                 | bounds
+    from ._coordinates import NAMES
+    if all(NAMES[0] in part.data.attributes for part in (ob,*tools)):
+        from ._surface import _surface, _project
+        # Sources already share the target frame; keep the full operand numbering.
+        source_meshes = [ob.data.copy()] + [_tool_mesh(tool, _core.world(ob).inverted() @ _core.world(tool), strip) for tool in tools]
+        try:
+            _project(bm, [_surface(mesh) for mesh in source_meshes], layer)
+        finally:
+            for mesh in source_meshes:
+                bpy.data.meshes.remove(mesh)
     bm.faces.layers.int.remove(layer)
     _core.add_tags(bm, face_add, edge_add)
     _flatten_names(bm)
+    from ._coordinates import NAMES
+    incomplete = any(NAMES[0] not in part.data.attributes for part in (ob,*tools))
+    if incomplete:
+        for label in NAMES:
+            layer = bm.verts.layers.float.get(label)
+            if layer is not None:
+                bm.verts.layers.float.remove(layer)
     _replace_mesh(ob, bm)
     if MERGED in ob:
         del ob[MERGED]
@@ -417,8 +448,8 @@ def join(ob, *others):
     return _boolean(ob, others, "UNION", strip=False, verb="join") if others else ob
 
 
-def _materials_lost(ob, others):
-    """Warn when `join` uses up a solid wearing another material than `ob`: the
+def _materials_lost(ob, others, verb="join"):
+    """Warn when `join` (or `blend`) uses up a solid wearing another material than `ob`: the
     result wears one material, `ob`'s, and the others' are gone from the export."""
     from .materials import _name, _nearest
     base = _nearest(ob)
@@ -434,8 +465,8 @@ def _materials_lost(ob, others):
     line = f" (line {_guard.calls[0][1]})" if _guard.calls else ""
     keeps = f"keeps its {_name(base)!r}" if base is not None else "wears no material"
     which = "; ".join(f"{name!r} on {', '.join(map(repr, parts))}" for name, parts in sorted(lost.items()))
-    warnings.warn(f"join{line}: {_core.given_name(ob)!r} {keeps}, and the parts joined into it lose theirs: "
-                  f"{which} — to keep each part its material, s3d.group(name, ...) them instead of joining",
+    warnings.warn(f"{verb}{line}: {_core.given_name(ob)!r} {keeps}, and the parts {verb}ed into it lose theirs: "
+                  f"{which} — to keep each part its material, s3d.group(name, ...) them instead of {verb}ing",
                   stacklevel=4)
 
 
@@ -568,6 +599,10 @@ def delete(ob):
     """Remove it.
 
     Remove `ob` from the scene; an object a verb used up is gone already."""
+    if isinstance(ob, (list, tuple)):
+        for part in ob:
+            delete(part)
+        return
     if _guard.removed(ob):
         return
     _guard.deleting(ob)
@@ -1192,22 +1227,35 @@ def _eigen3(a):
 # ---------------------------------------------------------------- whole objects
 
 def copy(ob):
-    """An independent copy, its joints with it.
+    """An independent copy, its joints with it; a list, the list of copies.
 
     An independent copy of `ob`: the same mesh, edge and face names, name and
     placement — a group or an assembly with its children, a handle with its anchors;
     a jointed part with its joints, hanging on the same parent (on the copy of its
-    parent, when the copy holds both).
+    parent, when the copy holds both). A list is worth its elements: the list of their
+    copies, in order, a joint between two of them kept between their copies.
     `ob` is untouched; to keep a tool a verb uses up, give it the copy."""
-    return _copy(ob)
+    if not isinstance(ob, (list, tuple)):
+        return _copy(ob)
+    from .joints import remap
+    children, twins = _children(), {}
+    copies = [_copy(o, children, twins) for o in _flat(ob)]
+    remap(twins)                         # a joint from one element to another hangs on the other's copy
+    return copies
 
 
-def _copy(ob, children=None):
-    """`copy`, given the scene's {parent: children} if it is known already."""
+def _copy(ob, children=None, seen=None):
+    """`copy`, given the scene's {parent: children} if it is known already; `seen`, if
+    given, gathers {original: copy} of every object copied."""
     from .assembly import Handle
     if not isinstance(ob, Handle):
-        return _copy_tree(ob, children)[ob]
+        twins = _copy_tree(ob, children)
+        if seen is not None:
+            seen.update(twins)
+        return twins[ob]
     twins = _copy_tree(ob.root, children)
+    if seen is not None:
+        seen.update(twins)
     memo = {id(o): twins.get(o, o) for o in _ids(vars(ob))}   # an object anchor becomes its twin
     handle = object.__new__(type(ob))
     handle.__dict__.update(deepcopy(vars(ob), memo))
@@ -1275,7 +1323,10 @@ def merge(*obs):
     One object holding the meshes of `obs`, untouched — no boolean: parts that
     touch stay separate shells. The first object's name is kept; the others are used up.
     A boolean on it later fuses its shells first."""
-    obs = _flat(obs)
+    from ._surface import meshes as mesh_parts
+    roots = _flat(obs)
+    containers = list(dict.fromkeys(o for root in roots for o in [root, *root.children_recursive] if o.type != "MESH"))
+    obs = mesh_parts(roots)
     first, others = obs[0], obs[1:]
     refuse_using_up(others, "merge")
     _guard.using_up(others, first)
@@ -1283,9 +1334,12 @@ def merge(*obs):
     meshes = [(first.data, Matrix.Identity(4))] + [(o.data, to_local @ _core.world(o)) for o in others]
     bm = _concat(meshes)
     _replace_mesh(first, bm)
+    first["s3d~merged.shading"] = True
     if others:
         first[MERGED] = True
     for o in others:
+        delete(o)
+    for o in reversed(containers):
         delete(o)
     return first
 
@@ -1294,7 +1348,27 @@ def _concat(meshes):
     """The meshes, each moved by its matrix, as one bmesh; tag attributes kept."""
     face_tags, edge_tags = [], []
     verts, faces, edge_keys = [], [], []
+    smooth_faces, sharp_edges = [], []
+    point_attributes = {}
+    for me, _ in meshes:
+        for attr in me.attributes:
+            if attr.domain == "POINT" and attr.data_type == "FLOAT":
+                point_attributes.setdefault(attr.name, [])
+    attributes = {}
+    supported = {"FLOAT": "float", "INT": "int", "BOOLEAN": "bool", "FLOAT_VECTOR": "float_vector"}
+    for me, _ in meshes:
+        for a in me.attributes:
+            if a.domain == "FACE" and a.data_type in supported and not a.name.startswith(_core.FACE_TAG):
+                attributes[a.name] = (a.data_type, [])
     for me, m in meshes:
+        for name, values in point_attributes.items():
+            attr = me.attributes.get(name)
+            values.extend([d.value for d in attr.data] if attr is not None else [float("nan")]*len(me.vertices))
+        smooth_faces.extend(p.use_smooth for p in me.polygons)
+        for name, (kind, values) in attributes.items():
+            attr = me.attributes.get(name)
+            default = (0,0,0) if kind == "FLOAT_VECTOR" else 0
+            values.extend([getattr(d, "vector" if kind == "FLOAT_VECTOR" else "value")[:] if kind == "FLOAT_VECTOR" else d.value for d in attr.data] if attr is not None else [default]*len(me.polygons))
         flip = m.to_3x3().determinant() < 0
         base = len(verts)
         verts += [m @ v.co for v in me.vertices]
@@ -1307,11 +1381,18 @@ def _concat(meshes):
             faces.append(vs[::-1] if flip else vs)
             face_tags.append({n[len(_core.FACE_TAG):] for n, vals in fl.items() if vals[i]})
         for i, e in enumerate(me.edges):
+            if e.use_edge_sharp:
+                sharp_edges.append(frozenset((base+e.vertices[0],base+e.vertices[1])))
             tags = {n[len(_core.EDGE_TAG):] for n, vals in el.items() if vals[i]}
             if tags:
                 edge_keys.append((frozenset((base + e.vertices[0], base + e.vertices[1])), tags))
     bm = bmesh.new()
+    point_layers = {name: bm.verts.layers.float.new(name) for name in point_attributes}
     bv = [bm.verts.new(v) for v in verts]
+    for name,values in point_attributes.items():
+        layer = point_layers[name]
+        for v,value in zip(bv,values):
+            v[layer] = value
     for f in faces:
         bm.faces.new([bv[i] for i in f])
     bm.verts.index_update()
@@ -1319,6 +1400,15 @@ def _concat(meshes):
     bm.edges.index_update()
     lookup = {frozenset((e.verts[0].index, e.verts[1].index)): e.index for e in bm.edges}
     _core.add_tags(bm, dict(enumerate(face_tags)), {lookup[k]: t for k, t in edge_keys if k in lookup})
+    for name, (kind, values) in attributes.items():
+        layer = getattr(bm.faces.layers, supported[kind]).new(name)
+        for face, value in zip(bm.faces, values):
+            face[layer] = value
+    for face, smooth in zip(bm.faces, smooth_faces):
+        face.smooth = smooth
+    bm.edges.ensure_lookup_table()
+    for key in sharp_edges:
+        bm.edges[lookup[key]].smooth = False
     return bm
 
 
@@ -1336,13 +1426,20 @@ def scale(ob, s):
 
 # ---------------------------------------------------------------- upholstery
 
-def dent(ob, points, r, depth):
+def dent(ob, points, r, depth, *, coords="local"):
     """Press hollows at points.
 
     Press the surface in at each of `points`: a round hollow of radius `r`, `depth` deep
-    at its centre — how upholstery is buttoned."""
+    at its centre — how upholstery is buttoned. Points and frame origins are in the
+    mesh's local space by default. coords="parent" reads them in the space `ob` is in,
+    as `snap` and `scatter(ob)` give them, wherever `ob` has been placed."""
     _solids("dent", ob)
+    if coords not in ("local", "parent"):
+        raise ValueError('dent: coords is "local" or "parent"')
     centres = [Vector(p.origin if isinstance(p, Frame) else p) for p in points]
+    if coords == "parent":
+        own = ob.matrix_basis.inverted()
+        centres = [own @ p for p in centres]
     bm = bmesh.new()
     bm.from_mesh(ob.data)
     for c in centres:
@@ -1385,3 +1482,817 @@ def _densify(bm, c, r, cuts=4):
             bmesh.ops.bisect_plane(bm, geom=geom, dist=_core.mm(WELD), plane_co=c + axis * (k * r / cuts), plane_no=axis)
             bm.faces.ensure_lookup_table()
             near = BVHTree.FromBMesh(bm).find_nearest_range(c, r)
+
+
+# ---------------------------------------------------------------- organic surfaces: blend, displace
+
+#: The most faces `blend` builds: its voxels are r / 5, and a voxel remesh gives about one face
+#: per voxel² of surface, three times over (a ball 100 across at r = 2 takes ~200 000, in seconds).
+BLEND_FACES = 600_000
+#: How far, in voxels, a blend may stand beyond its parts' box: a closing never grows a shape past
+#: it, and the voxels round it off by less than this.
+BLEND_REACH = 1.5
+
+
+def _number(verb, what, value, positive=False):
+    """`value` as a float, or a clear error: a number, more than 0 if `positive`."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+        raise TypeError(f"{verb}: {what} is a number, not {value!r}")
+    if positive and value <= 0:
+        raise ValueError(f"{verb}: {what} is a length, more than 0, not {value:g}")
+    return float(value)
+
+
+def _soup(parts):
+    """One mesh holding the faces of every (mesh, matrix), moved by it and facing out."""
+    verts, faces = [], []
+    for me, m in parts:
+        base = len(verts)
+        flip = m.to_3x3().determinant() < 0
+        verts += [m @ v.co for v in me.vertices]
+        for p in me.polygons:
+            vs = [base + i for i in p.vertices]
+            faces.append(vs[::-1] if flip else vs)
+    mesh = bpy.data.meshes.new("_s3d_blend")
+    mesh.from_pydata(verts, [], faces)
+    return mesh
+
+
+def _closing(mesh, r, voxel):
+    """The morphological closing of the solid `mesh` by a ball of radius `r`, with modifiers
+    only: voxel-remesh the union, push every point out by r along its normal, remesh (which
+    resolves where the pushed surface crosses itself), pull it back by r, remesh. The pull is
+    the exact offset wherever the surface bends less than 1 / r, which the push guarantees.
+    Remesh and Displace give the same mesh in every run and under bpy 4.5 and 5.x."""
+    holder = _core.link(bpy.data.objects.new("_s3d_blend", mesh))
+    try:
+        def remesh():
+            mod = holder.modifiers.new("remesh", "REMESH")
+            mod.mode, mod.voxel_size, mod.adaptivity = "VOXEL", voxel, 0.0
+        remesh()
+        for d in (r, -r):
+            mod = holder.modifiers.new("offset", "DISPLACE")
+            mod.direction, mod.mid_level, mod.strength = "NORMAL", 0.0, d
+            remesh()
+        depsgraph = bpy.context.evaluated_depsgraph_get()
+        result = bpy.data.meshes.new_from_object(holder.evaluated_get(depsgraph), depsgraph=depsgraph)
+    finally:
+        bpy.data.objects.remove(holder)
+        bpy.data.meshes.remove(mesh)
+    bm = bmesh.new()
+    bm.from_mesh(result)
+    bpy.data.meshes.remove(result)
+    return bm
+
+
+def _facet_surface(bm):
+    """Collapse a reconstructed surface toward equilateral triangles of target edge.
+
+    Keep the fine voxel closing (and its thin-part guards); only simplify the result.
+    Explicit input topology such as hull points is never decimated.
+    """
+    extent = _span([c for v in bm.verts for c in v.co])
+    target = _core.surface_edge([hi-lo for lo, hi in zip(*extent)])
+    triangles = sum(len(f.verts)-2 for f in bm.faces)
+    budget = max(4, math.ceil(4 * sum(f.calc_area() for f in bm.faces) / (math.sqrt(3)*target**2)))
+    if triangles <= budget:
+        return bm
+    mesh = bpy.data.meshes.new('_s3d_facets')
+    bm.to_mesh(mesh)
+    holder = _core.link(bpy.data.objects.new('_s3d_facets', mesh))
+    try:
+        mod = holder.modifiers.new('facets', 'DECIMATE')
+        mod.ratio, mod.use_collapse_triangulate = budget / triangles, True
+        graph = bpy.context.evaluated_depsgraph_get()
+        result = bpy.data.meshes.new_from_object(holder.evaluated_get(graph), depsgraph=graph)
+        coarse = bmesh.new()
+        coarse.from_mesh(result)
+        bpy.data.meshes.remove(result)
+        if not coarse.faces or any(not e.is_manifold for e in coarse.edges):
+            coarse.free()
+            return bm
+        bm.free()
+        return coarse
+    finally:
+        bpy.data.objects.remove(holder)
+        bpy.data.meshes.remove(mesh)
+
+
+def _span(co):
+    """(lo, hi) corners of the box round flat coordinates `co`, or None if there are none."""
+    if not co:
+        return None
+    return [min(co[a::3]) for a in range(3)], [max(co[a::3]) for a in range(3)]
+
+
+def _thinnest(parts, size):
+    """(the thinnest side, in millimetres, of a part's box in its own space, its name), over
+    every (part, its placement in the blend's space); None if no part has a vertex."""
+    found = None
+    for part, matrix in parts:
+        co = [0.0] * (3 * len(part.data.vertices))
+        part.data.vertices.foreach_get("co", co)
+        box = _span(co)
+        if box is None:
+            continue
+        m = matrix.to_3x3()
+        side = min((hi - lo) * m.col[a].length * size for a, (lo, hi) in enumerate(zip(*box)))
+        if found is None or side < found[0]:
+            found = (side, _core.given_name(part))
+    return found
+
+
+def blend(ob, *others, r):
+    """Fuse others in, creases filled to about radius r on voxels of r / 5; its faces are all blend.
+
+    `ob` with `others` fused in, and the creases where surfaces meet — between the parts, or
+    within one — rounded over: a limb grows out of a trunk, a pad out of a palm. It is the
+    closing of the union by a ball of radius `r` (what a ball of radius r rolling over the
+    outside cannot reach is filled in), approximated on voxels of r / 5: a crease is filled
+    to a radius of about r, not an exact fillet; convex shapes are kept, to a voxel; a gap
+    between parts narrower than about 2 r closes, but only where the voxels resolve it —
+    expect a voxel of error on any of these. Blend the massive parts first with a large r,
+    then the fine ones with a smaller r. With no others, `ob`'s own creases are filled.
+
+    Like `join`: the others are used up, and `ob` keeps its name, its frame, its placement
+    and its material (the others' are lost). The result is a new smooth surface: every face
+    is named `blend` (and `<ob>.blend`), whatever names the parts had, and no edge is named;
+    reach it by direction (`ob.face("+Z")`) or by frame. The cost is fixed by r: a blend
+    that would take more than 600 000 faces (about the parts' surface / (r / 5)²) raises —
+    give a larger r, or blend smaller groups of parts and join the results. The voxels must
+    hold every part: one whose box, in its own space, is thinner than 2 r (ten voxels) is
+    refused — under that, the voxels swell or shrink it — and so is a result that would
+    stand more than 1.5 voxels beyond the parts' box (a closing never grows past it): give
+    a smaller r, or join the thin part after the blend. Nothing is used up when it raises."""
+    others = _flat(others)
+    _solids("blend", ob, *others)
+    r = _number("blend", "r", r, positive=True)
+    refuse_using_up(others, "blend")
+    name = _core.given_name(ob)
+    size = _core.in_mm(1.0)             # remesh in millimetres: the voxels do not depend on the unit
+    to_mm = Matrix.Scale(size, 4)
+    to_local = _core.world(ob).inverted()
+    r_mm = r * size
+    voxel = r_mm / 5
+    thinnest = _thinnest([(ob, Matrix.Identity(4))] + [(o, to_local @ _core.world(o)) for o in others], size)
+    if thinnest is not None and thinnest[0] < 2 * r_mm * (1 - 1e-9):
+        raise ValueError(f"blend: {thinnest[1]!r} is {thinnest[0] / size:.3g} thick, under 2 r = {2 * r:g}: the "
+                         f"voxels (r / 5) do not hold it — give an r of {thinnest[0] / size / 2:.3g} or less, or join "
+                         f"it after the blend")
+    mesh = _soup([(ob.data, to_mm)] + [(o.data, to_mm @ to_local @ _core.world(o)) for o in others])
+    area = sum(p.area for p in mesh.polygons)
+    if area / voxel ** 2 > BLEND_FACES:
+        bpy.data.meshes.remove(mesh)
+        raise ValueError(f"blend: r = {r:g} on {name!r} would take about {area / voxel ** 2:,.0f} faces (voxels of "
+                         f"r / 5 over its surface), more than {BLEND_FACES:,}: give a larger r, or blend smaller "
+                         f"groups of parts and join the results")
+    co = [0.0] * (3 * len(mesh.vertices))
+    mesh.vertices.foreach_get("co", co)
+    before = _span(co)
+    bm = _closing(mesh, r_mm, voxel)
+    after = _span([c for v in bm.verts for c in v.co])
+    if after is None:
+        bm.free()
+        raise ValueError(f"blend: nothing is left of {name!r} — its parts are thinner than the voxel "
+                         f"({voxel / size:.3g}, r / 5): give a smaller r")
+    beyond = max(max(b_lo - a_lo for a_lo, b_lo in zip(after[0], before[0])),
+                 max(a_hi - b_hi for a_hi, b_hi in zip(after[1], before[1])))
+    if beyond > BLEND_REACH * voxel:
+        bm.free()
+        raise ValueError(f"blend: the voxels (r / 5 = {voxel / size:.3g}) do not resolve {name!r}: the result would "
+                         f"stand {beyond / size:.3g} beyond its parts — give a smaller r")
+    if _core.FACETS is not None:
+        bm = _facet_surface(bm)
+    _materials_lost(ob, others, "blend")
+    _guard.using_up(others, ob)
+    for o in others:
+        delete(o)
+    if size != 1.0:
+        bmesh.ops.scale(bm, vec=(1 / size,) * 3, verts=bm.verts)
+    for domain in (bm.faces, bm.edges):
+        for lay in list(domain.layers.bool.values()):
+            if lay.name.startswith((_core.FACE_TAG, _core.EDGE_TAG)):
+                domain.layers.bool.remove(lay)
+    _sort_mesh(bm)
+    _core.write_tags(bm, name, [{"blend"}] * len(bm.faces), [None] * len(bm.edges))
+    _replace_mesh(ob, bm)
+    if MERGED in ob:
+        del ob[MERGED]
+    return ob
+
+
+#: The noises `displace` knows.
+NOISES = ("perlin", "cells", "ridged", "turbulence")
+#: The most faces `displace` adds to a part by refining it: past it, `size` is too small for
+#: the part. A part already that dense — what `blend` makes — is displaced as it is.
+DISPLACE_FACES = 500_000
+
+
+def _refine(bm, size, name):
+    """Cut `bm` into triangles with no edge longer than about size / 4, in one pass: a
+    surface whose every point has a vertex near it, whatever its faces were (a box's top is
+    one face).
+
+    Every convex face of more than three sides is fanned about its centre — no tie for a
+    triangulation to break differently in another unit —, every concave one filled with
+    triangles inside its outline (`_fill_concave`). Then each edge is cut into
+    ceil(4 length / size) equal pieces, and each triangle filled again from its cut sides
+    and rows of points inside it (`_rows`), as many and as dense as its own size asks: the
+    faces added follow the surface's area, not how the part was cut. Faces and edges keep
+    their names; the new edges inside a face have none. Raises, before cutting anything,
+    when the cuts would add more than `DISPLACE_FACES`."""
+    many = [f for f in bm.faces if len(f.verts) > 3]
+    concave = [f for f in many if not _convex(f)]
+    bmesh.ops.poke(bm, faces=[f for f in many if _convex(f)])
+    _fill_concave(bm, concave)
+    longest = size / 4 * (1 + 1e-5)     # an edge of exactly `longest` (a power of two of a side) stays whole in any unit
+    bm.verts.index_update()
+    bm.edges.index_update()
+    cuts = {}
+    for e in bm.edges:
+        length = e.calc_length()
+        cuts[e] = max(1, math.ceil(length / longest)) if math.isfinite(length) else 1
+    plans, added = [], 0
+    faces = list(bm.faces)
+    for k, f in enumerate(faces):
+        corners = list(f.verts)
+        sides = [cuts[bm.edges.get((corners[i], corners[(i + 1) % len(corners)]))] for i in range(len(corners))]
+        rows = _rows(corners, sides, longest) if len(corners) == 3 else []
+        inside = sum(n - 1 for *_, n in rows)
+        boundary = sum(sides)
+        if boundary == len(corners) and not inside:
+            continue
+        added += 2 * inside + boundary - 3   # a polygon of B sides with I points inside: 2 I + B - 2 triangles
+        if added > DISPLACE_FACES:           # the rest at two triangles per longest² of area, without counting
+            added += round(sum(2 * g.calc_area() for g in faces[k + 1:]) / longest ** 2)
+            raise ValueError(f"displace: features {size:g} across on {name!r} would add about {added:,} faces, "
+                             f"more than {DISPLACE_FACES:,}: give a larger size")
+        plans.append((f, corners, [tuple(p + (q - p) * j / n for p, q in zip(start, stop))
+                                   for start, stop, n in rows for j in range(1, n)]))
+    for e in sorted((e for e, n in cuts.items() if n > 1), key=lambda e: e.index):
+        n = cuts[e]
+        a, b = sorted(e.verts, key=lambda v: v.index)
+        start, stop = tuple(a.co), tuple(b.co)      # in double precision: a point of a flat side stays on it
+        edge, here = e, a
+        for k in range(1, n):
+            _, v = bmesh.utils.edge_split(edge, here, 1 / (n - k + 1))
+            v.co = [(p * (n - k) + q * k) / n for p, q in zip(start, stop)]
+            edge = next(x for x in v.link_edges if x.other_vert(v) != here)
+            here = v
+    slivers = [face for face, corners, inside in plans if not _fill(bm, face, corners, inside)]
+    if slivers:                         # one operator for all: each call walks the whole mesh
+        bmesh.ops.triangulate(bm, faces=slivers, quad_method="BEAUTY", ngon_method="BEAUTY")
+
+
+def _rows(corners, sides, longest):
+    """The rows of points to add inside a triangle whose sides will be cut in `sides`
+    pieces, as (start, stop, pieces): rows parallel to its most cut side (the first of
+    them), as many as its height over that side asks, each cut as its own length asks —
+    about one point per longest² of area, however long and thin the triangle. The points
+    are the row's inner cuts. In double precision."""
+    k = max(range(3), key=lambda i: (sides[i], -i))
+    a, b, c = (tuple(corners[(k + i) % 3].co) for i in range(3))
+    ab = [q - p for p, q in zip(a, b)]
+    ac = [q - p for p, q in zip(a, c)]
+    base = math.sqrt(sum(x * x for x in ab))
+    cross = (ab[1] * ac[2] - ab[2] * ac[1], ab[2] * ac[0] - ab[0] * ac[2], ab[0] * ac[1] - ab[1] * ac[0])
+    if not base or not all(math.isfinite(x) for x in cross):
+        return []
+    height = math.sqrt(sum(x * x for x in cross)) / base
+    count = max(1, math.ceil(height / longest))
+    rows = []
+    for r in range(1, count):
+        t = r / count
+        rows.append(([p + (q - p) * t for p, q in zip(a, c)], [p + (q - p) * t for p, q in zip(b, c)],
+                     max(1, math.ceil(base * (1 - t) / longest))))
+    return rows
+
+
+def _fill(bm, face, corners, inside):
+    """Replace the triangle `face` — its sides already cut, `corners` its three corners — by
+    triangles through its side points and the points `inside` it, by the constrained
+    Delaunay triangulation caps use (in millimetres). False, the face left as it is, for a
+    sliver the triangulation cannot fill whole: it is cut from its side points alone."""
+    if len(corners) != 3:
+        return False
+    a, b, c = (v.co.copy() for v in corners)
+    normal = (b - a).cross(c - a)
+    loop = list(face.verts)
+    inside = [Vector(p) for p in inside]
+    tris = None
+    if normal.length > 0:
+        normal.normalize()
+        u = normal.orthogonal().normalized()
+        w = normal.cross(u)
+        flat = [(p.dot(u), p.dot(w)) for p in [v.co for v in loop] + inside]
+        tris = _triangles(flat, len(loop))
+    if not tris:
+        return False
+    verts = loop + [bm.verts.new(p) for p in inside]
+    for t in tris:
+        bm.faces.new([verts[i] for i in t], face)
+    bm.faces.remove(face)
+    return True
+
+
+def _triangles(flat, boundary):
+    """Triangles, anticlockwise, of the 2D points `flat` inside the outline of their first
+    `boundary` points; None unless they cover it whole, every point used as given."""
+    edges = [(i, (i + 1) % boundary) for i in range(boundary)]
+    _, _, faces, orig, _, _ = _core.triangulate(flat, edges, 1, 1e-6)
+    tris = []
+    area = 0.0
+    for f in faces:
+        if not all(len(orig[v]) == 1 for v in f):
+            return None
+        t = [orig[v][0] for v in f]
+        (ax, ay), (bx, by), (cx, cy) = (flat[i] for i in t)
+        cross = (bx - ax) * (cy - ay) - (by - ay) * (cx - ax)
+        tris.append(t if cross > 0 else t[::-1])
+        area += abs(cross) / 2
+    outline = sum(flat[i][0] * flat[(i + 1) % boundary][1] - flat[(i + 1) % boundary][0] * flat[i][1]
+                  for i in range(boundary)) / 2
+    used = {i for t in tris for i in t}
+    if len(used) != len(flat) or abs(area - abs(outline)) > 1e-6 * max(abs(outline), 1e-30):
+        return None
+    return tris
+
+
+def _convex(face):
+    """Whether no corner of `face` turns back against its normal: its centre sees its whole
+    outline, and a fan about it stays inside."""
+    vs = [v.co for v in face.verts]
+    n = face.normal
+    size = max((v - vs[0]).length for v in vs)
+    return all((vs[i] - vs[i - 1]).cross(vs[(i + 1) % len(vs)] - vs[i]).dot(n) >= -1e-9 * size * size
+               for i in range(len(vs)))
+
+
+def _fill_concave(bm, faces):
+    """Replace each face of `faces` by triangles inside its outline: its corners laid flat
+    across its normal, then the constrained Delaunay triangulation every cap uses, which
+    runs in millimetres — the same triangles in any unit. Each triangle keeps the face's names."""
+    for face in faces:
+        n = face.normal
+        u = n.orthogonal().normalized()
+        w = n.cross(u)
+        verts = list(face.verts)
+        tris = _cap([(v.co.dot(u), v.co.dot(w)) for v in verts])
+        if not tris:
+            continue
+        for t in tris:
+            bm.faces.new([verts[i] for i in t], face)
+        bm.faces.remove(face)
+
+
+def _field(kind, octaves, seed):
+    """The noise as a function of a point (in units of the feature size), in [-1, 1]: each
+    octave at twice the frequency and half the weight of the one before, the field offset by
+    `seed`."""
+    rng = random.Random(seed)
+    shifts = [Vector([rng.uniform(-128, 128) for _ in range(3)]) for _ in range(octaves)]
+    weights = [0.5 ** k for k in range(octaves)]
+    total = sum(weights)
+    if kind == "ridged":
+        return lambda q: 2 * fields.ridged_multi_fractal(q + shifts[0], 1.0, 2.0, octaves, 1.0, 1.0,
+                                                         noise_basis="PERLIN_NEW") / total - 1
+    if kind == "turbulence":
+        return lambda q: 2 * fields.turbulence(q + shifts[0], octaves, True, noise_basis="PERLIN_NEW",
+                                               amplitude_scale=0.5, frequency_scale=2.0) / total - 1
+    if kind == "cells":
+        def one(q):     # each cell a bump, its borders grooves: 1 at a feature point, -1 a unit away
+            return 1 - 2 * min(fields.voronoi(q, distance_metric="DISTANCE")[0][0], 1.0)
+    else:
+        def one(q):
+            return fields.noise(q, noise_basis="PERLIN_NEW")
+    return lambda q: sum(w * one(q * 2 ** k + s) for k, (w, s) in enumerate(zip(weights, shifts))) / total
+
+
+def _push(direction):
+    """The direction of `displace`: "normal", "radial", or a constant vector."""
+    if direction in ("normal", "radial"):
+        return direction
+    d = _DIRECTION.match(direction) if isinstance(direction, str) else None
+    if d:
+        v = Vector({"x": (1, 0, 0), "y": (0, 1, 0), "z": (0, 0, 1)}[d.group(2).lower()])
+        return -v if d.group(1) in ("-", "<") else v
+    if (isinstance(direction, (tuple, list, Vector)) and len(direction) == 3
+            and all(isinstance(c, (int, float)) and not isinstance(c, bool) and math.isfinite(c) for c in direction)
+            and Vector(direction).length > 0 and all(math.isfinite(c) for c in Vector(direction).normalized())):
+        return Vector(direction).normalized()
+    raise ValueError(f"displace: direction is \"normal\", \"radial\" (from the part's origin), a direction "
+                     f"(\"+Z\", \"-X\"…) or (x, y, z), not {direction!r}")
+
+
+def _path_coordinates(bm):
+    """Read interpolated construction labels, never search the deformed geometry."""
+    from ._coordinates import NAMES
+    layers = [bm.verts.layers.float.get(n) for n in NAMES]
+    if any(layer is None for layer in layers):
+        raise ValueError('displace: coords="path" needs construction coordinates')
+    data = np.array([[v[layer] for layer in layers] for v in bm.verts], dtype=np.float64)
+    if not np.all(np.isfinite(data)):
+        raise ValueError('displace: construction coordinates are undefined on some vertices')
+    return np.column_stack((data[:,0],np.degrees(np.arctan2(data[:,2],data[:,1])),np.hypot(data[:,1],data[:,2])))
+
+
+def displace(ob, amount, size, noise="perlin", octaves=1, seed=0, direction="normal", fade=None, *, coords="local", refine=True):
+    """Push the surface out and in by up to amount, features size across: noise perlin cells ridged
+    turbulence or a callable; direction normal, radial or "+Z"…; fade along own Z.
+
+    A callable receives float64 arrays (x, y, z) in local program units, or
+    (s, angle_degrees, radius) with coords="path" on a wire or sweep.
+    Return a same-shaped finite real ndarray in [-1, 1]. Values multiply
+    amount directly without centring. Keep octaves=1 and seed=0; compose
+    noise inside the callback. Size controls refinement only. Path coordinates
+    read vertex construction labels with parallel-transported angular axes;
+    they follow copies, joins, merges and deformations without reprojection.
+
+    `ob`'s surface pushed out and in by up to `amount`, its features about `size` across:
+    bark, rock, coral, a hammered finish. `amount` and `size` are lengths.
+
+    A named noise is a field fixed to the part: its own frame, its origin at the part's origin,
+    so it moves with the part. It is read at every vertex at the point / `size`, shifted by
+    `seed` (an integer: the same seed, the same field, in every run). Each noise gives a
+    value between -1 and 1:
+
+    - "perlin": gradient noise, soft hills and hollows;
+    - "cells": 1 at the feature points of a Worley field, -1 a feature size from the nearest:
+      a bump per cell, grooves at the borders (scales, cobbles);
+    - "ridged": ridged multifractal, sharp crests where Perlin noise crosses zero;
+    - "turbulence": the sum of |Perlin|, soft swells and creased hollows.
+
+    `octaves` n sums n layers, the k-th (from 0) at 2^k the frequency and 1 / 2^k the
+    weight, divided by the sum of the weights: still between -1 and 1. The values are then
+    centred on the surface: their average (by area, and by the fade's weight) is taken off,
+    and they are divided by 1 + |that average|, so the part keeps about its volume and no
+    point moves more than `amount`. A vertex moves by `amount` × its value × the fade's
+    weight, along `direction`: "normal", its normal (the mean of its faces'); "radial",
+    the line from the part's origin through it (a vertex at the origin stays); a direction
+    "+X" … "-Z", or any (x, y, z) but (0, 0, 0), in the part's own space, the same for every
+    vertex. `fade=(z0, z1)`: the weight is 1 at z0 on the part's own Z and 0 at z1, linear
+    between, 1 beyond z0 and 0 beyond z1, either above the other — a trunk rough above its
+    root.
+
+    The surface is first refined so that no edge is longer than about size / 4 (past 500 000
+    faces, it raises: give a larger size), then every vertex
+    moves. Faces and edges keep their names, but a face it moved is flat no more: read the
+    frames a part needs (`ob.face("top")`) before displacing it.
+    Fixed facets(n) bounds refinement by π D / n, D the largest local box dimension;
+    existing fine edges remain. Auto refinement is unchanged.
+    refine=False moves existing vertices only, retaining their order and attributes."""
+    if not isinstance(refine, bool):
+        raise TypeError("displace: refine is True or False")
+    _solids("displace", ob)
+    amount = _number("displace", "amount", amount)
+    size = _number("displace", "size", size, positive=True)
+    custom = callable(noise)
+    if coords not in ("local", "path"):
+        raise ValueError('displace: coords is "local" or "path"')
+    if coords == "path":
+        if not custom:
+            raise ValueError('displace: coords="path" requires callable noise')
+        if ".s3d_s" not in ob.data.attributes:
+            raise ValueError('displace: coords="path" needs a wire or sweep; displace before join or deform')
+    if custom and (octaves != 1 or seed != 0):
+        raise ValueError("displace: callable noise requires octaves=1 and seed=0; compose noise inside the function")
+    if not custom and noise not in NOISES:
+        raise ValueError(f"displace: noise is {', '.join(repr(n) for n in NOISES[:-1])} or {NOISES[-1]!r}, "
+                         f"not {noise!r}")
+    if isinstance(octaves, bool) or not isinstance(octaves, int) or octaves < 1:
+        raise ValueError(f"displace: octaves is a whole number, 1 or more, not {octaves!r}")
+    if isinstance(seed, bool) or not isinstance(seed, int):
+        raise TypeError(f"displace: seed is an integer, not {seed!r}")
+    push = _push(direction)
+    if fade is not None:
+        if (not isinstance(fade, (tuple, list)) or len(fade) != 2
+                or any(isinstance(z, bool) or not isinstance(z, (int, float)) for z in fade)):
+            raise TypeError(f"displace: fade is (z0, z1), full effect at z0 and none at z1, not {fade!r}")
+        if not all(math.isfinite(z) for z in fade):
+            raise ValueError(f"displace: fade runs between two finite heights, not {fade[0]:g} and {fade[1]:g}")
+        if fade[0] == fade[1]:
+            raise ValueError(f"displace: fade runs between two different heights, not {fade[0]:g} and {fade[1]:g}")
+    bm = bmesh.new()
+    bm.from_mesh(ob.data)
+    try:
+        if refine:
+            refinement_size = size
+            if _core.FACETS is not None:
+                extent = _span([c for v in bm.verts for c in v.co])
+                target = _core.surface_edge([hi-lo for lo, hi in zip(*extent)])
+                refinement_size = max(size, 4 * target)
+            _refine(bm, refinement_size, _core.given_name(ob))
+    except ValueError:
+        bm.free()
+        raise
+    bm.normal_update()
+    values = None
+    if custom:
+        try:
+            points = np.array([tuple(v.co) for v in bm.verts], dtype=np.float64)
+            if coords == "path":
+                points = _path_coordinates(bm)
+            values = noise(*points.T)
+            if not isinstance(values, np.ndarray) or values.shape != (len(points),):
+                raise ValueError("displace: callable must return an ndarray with the input shape")
+            if values.dtype.kind not in "fiu" or not np.all(np.isfinite(values)):
+                raise ValueError("displace: callable values must be finite real numbers")
+            values = values.astype(np.float64, copy=False)
+            if np.any(np.abs(values) > 1):
+                raise ValueError("displace: callable values must lie in [-1, 1]")
+        except BaseException:
+            bm.free()
+            raise
+    else:
+        field = _field(noise, octaves, seed)
+
+    def weight(z):
+        if fade is None:
+            return 1.0
+        z0, z1 = fade
+        return min(max((z - z1) / (z0 - z1), 0.0), 1.0)
+    samples = []
+    for i, v in enumerate(bm.verts):
+        w = weight(v.co.z)
+        if w and amount:
+            area = 0.0 if custom else sum(f.calc_area() / len(f.verts) for f in v.link_faces)
+            samples.append((v, w, area, float(values[i]) if custom else field(v.co / size)))
+    total = sum(w * a for _, w, a, _ in samples)
+    mean = sum(w * a * value for _, w, a, value in samples) / total if total else 0.0
+    if custom:
+        mean = 0.0
+    moves = []
+    for v, w, _, value in samples:
+        d = v.normal if push == "normal" else (v.co.normalized() if push == "radial" else push)
+        moves.append((v, d * (amount * w * (value - mean) / (1 + abs(mean)))))
+    for v, step in moves:
+        v.co += step
+    if refine:
+        _sort_mesh(bm)
+    _replace_mesh(ob, bm)
+    return ob
+
+
+# ---------------------------------------------------------------- own-frame deformers
+
+def _deform_axis(verb, axis):
+    if not isinstance(axis, str) or axis not in ("+X", "-X", "+Y", "-Y", "+Z", "-Z"):
+        raise ValueError(f'{verb}: axis is a signed direction ("+Y", "-X"…), not {axis!r}')
+    return Vector(tuple((1 if axis[0] == "+" else -1) if c == axis[1] else 0 for c in "XYZ"))
+
+
+def _deform_parts(ob, verb):
+    """Meshes and their placements in the root's own frame, including nested groups."""
+    from .assembly import Handle
+    root = ob.root if isinstance(ob, Handle) else ob
+    if not isinstance(root, bpy.types.Object) or root.type not in ("MESH", "EMPTY"):
+        _solids(verb, root)
+    children = _children()
+    parts = []
+
+    def walk(part, matrix):
+        if part.type == "MESH":
+            parts.append((part, matrix))
+        for child in children.get(part, []):
+            walk(child, matrix @ child.matrix_parent_inverse @ child.matrix_basis)
+    walk(root, Matrix.Identity(4))
+    return parts
+
+
+def _deform(ob, value, axis, verb, toward=None):
+    a = _deform_axis(verb, axis)
+    b = _deform_axis(verb, toward) if verb == "bend" else None
+    if b is not None and a.dot(b):
+        raise ValueError(f"bend: toward {toward!r} must be perpendicular to axis {axis!r}")
+    value = _number(verb, "s" if verb == "taper" else "angle", value)
+    if verb == "taper" and value <= 0:
+        raise ValueError(f"taper: s is a ratio, more than 0, not {value:g}")
+    parts = _deform_parts(ob, verb)
+    us = [(matrix @ v.co).dot(a) for part, matrix in parts for v in part.data.vertices]
+    lo, hi = (min(us), max(us)) if us else (0, 0)
+    span = hi - lo
+    if span == 0:
+        raise ValueError(f"{verb}: no extent along axis {axis!r}")
+    if value == (1 if verb == "taper" else 0):
+        return ob
+    k = math.radians(value) / span if verb != "taper" else 0
+    for part, matrix in parts:
+        inverse = matrix.inverted()
+        bm = bmesh.new()
+        bm.from_mesh(part.data)
+        bm.transform(matrix)
+        bm.normal_update()
+        if verb != "taper":
+            # Cut through the faces too, not just their rims. Each new face inherits
+            # its parent's names. Fixed planes make the refinement independent of units.
+            bmesh.ops.triangulate(bm, faces=list(bm.faces), quad_method="FIXED", ngon_method="EAR_CLIP")
+            pieces = _core.segments(1, abs(value)) if _core.FACETS is not None else 48
+            for i in range(1, pieces):
+                bmesh.ops.bisect_plane(bm, geom=list(bm.verts) + list(bm.edges) + list(bm.faces),
+                                       dist=span * 1e-8, plane_co=a * (lo + span * i / pieces), plane_no=a)
+            bmesh.ops.triangulate(bm, faces=list(bm.faces), quad_method="FIXED", ngon_method="EAR_CLIP")
+        for v in bm.verts:
+            u = v.co.dot(a)
+            if verb == "bend":
+                z = v.co.dot(b)
+                theta = k * u
+                # 2 sin²(theta/2) avoids cancellation at small angles.
+                v.co += a * ((1 / k - z) * math.sin(theta) - u) + b * (
+                    2 * math.sin(theta / 2) ** 2 / k + z * (math.cos(theta) - 1))
+            else:
+                p = v.co - a * u
+                t = (u - lo) / span
+                if verb == "twist":
+                    theta = math.radians(value) * t
+                    v.co = a * u + p * math.cos(theta) + a.cross(p) * math.sin(theta)
+                else:
+                    v.co = a * u + p * (1 + (value - 1) * t)
+        bm.transform(inverse)
+        bm.normal_update()
+        bm.to_mesh(part.data)
+        bm.free()
+        part.data.update()
+    return ob
+
+
+def bend(ob, angle, axis="+Y", toward="+Z"):
+    """Curl along its own axis toward a perpendicular direction, angle in degrees.
+
+    The neutral axis passes through the origin; a point at signed distance u turns
+    by angle * u / L, where L is the axis extent. Negative u curls the other way;
+    angles beyond 180 degrees are allowed. Zero leaves the mesh unchanged.
+    Faces keep their maker's names, refined faces their parent's. Refinement cuts
+    through faces at intervals of L / 48 in auto mode; a fixed facet count sets
+    the pieces by the bend angle. Normals are updated after the edit.
+    On a group, its children bend together in its frame, with one shared extent.
+    Name, placement and materials stay; read any flat face frames before bending.
+    """
+    return _deform(ob, angle, axis, "bend", toward)
+
+
+def twist(ob, angle, axis="+Y"):
+    """Turn sections about its own axis, right handed, angle in degrees at the far end.
+
+    The end at the least signed coordinate stays fixed. Faces keep their maker's
+    names; refinement and groups work as in bend. Zero leaves the mesh unchanged.
+    """
+    return _deform(ob, angle, axis, "twist")
+
+
+def taper(ob, s, axis="+Y"):
+    """Scale sections across its own axis, from 1 at the near end to ratio s > 0.
+
+    Not extrude(taper=), which takes degrees, nor superellipse(taper=), a narrowing
+    fraction. No refinement is needed. Faces keep their names; a group uses one
+    shared extent in its own frame. s = 1 leaves the mesh unchanged.
+    """
+    return _deform(ob, s, axis, "taper")
+
+
+def _drop_tessellation_duplicates(bm):
+    """Expose overlapping ngon triangles before exporters triangulate them.
+
+    An exact boolean can leave two distinct concave polygons sharing a triangle.
+    Mesh validation only detects this after tessellation; leave ordinary faces alone.
+    """
+    probe = bpy.data.meshes.new('tessellation')
+    try:
+        bm.to_mesh(probe)
+        if _core.MM != 1:
+            probe.transform(Matrix.Scale(_core.MM, 4))
+        probe.calc_loop_triangles()
+        seen, affected = {}, set()
+        for t in probe.loop_triangles:
+            key = tuple(sorted(t.vertices))
+            if key in seen:
+                affected.update((seen[key], t.polygon_index))
+            else:
+                seen[key] = t.polygon_index
+        if affected:
+            bm.faces.ensure_lookup_table()
+            # Blender tessellation has absolute tolerances: decide in millimetres,
+            # then restore the exact input positions, including in power-of-two units.
+            positions = [(v, v.co.copy()) for v in bm.verts] if _core.MM != 1 else []
+            try:
+                for v, co in positions:
+                    v.co = co*_core.MM
+                bmesh.ops.triangulate(bm, faces=[bm.faces[i] for i in sorted(affected)])
+            finally:
+                for v, co in positions:
+                    v.co = co
+            bm.verts.index_update()
+            groups = {}
+            for f in bm.faces:
+                groups.setdefault(tuple(sorted(v.index for v in f.verts)), []).append(f)
+            duplicates = [f for group in groups.values() if len(group)>1 for f in group]
+            if duplicates:
+                bmesh.ops.delete(bm, geom=duplicates, context='FACES_ONLY')
+            loose = [e for e in bm.edges if not e.link_faces]
+            if loose:
+                bmesh.ops.delete(bm, geom=loose, context='EDGES')
+    finally:
+        bpy.data.meshes.remove(probe)
+
+
+def lay(ob, over, refine=0, reach=None):
+    """Seat a placed part on a surface: every point keeps its height above the part's own
+    Z = 0 plane, measured from the surface of `over` under it.
+
+    A flat piece built on Z = 0 and placed on a frame of the carrier follows the carrier
+    after it: its base lies on the skin, what was below stays buried, what was above
+    stands as proud. Points move along the part's own Z only, so nothing folds; a face
+    stays flat between its points, so give a long piece points along its length. A group
+    is laid in its own frame.
+    refine subdivides faces before seating until every edge is at most that length;
+    0 leaves the topology. reach bounds the travel from the base plane to the surface;
+    None has no limit. Projection and tessellation use the parts' own frames, so a
+    common translation and rotation do not change the result in the piece's frame.
+    """
+    from .assembly import Handle
+    from ._surface import meshes
+    if isinstance(ob, (list, tuple)):
+        for item in ob:
+            lay(item, over, refine=refine, reach=reach)
+        return ob
+    refine = _number('lay', 'refine', refine)
+    if refine < 0:
+        raise ValueError('lay: refine must be nonnegative')
+    if reach is not None:
+        reach = _number('lay', 'reach', reach)
+        if reach < 0:
+            raise ValueError('lay: reach must be nonnegative')
+    carriers = meshes(over)
+    if not carriers:
+        raise TypeError("lay: over must contain mesh parts")
+    parts = _deform_parts(ob, "lay")
+    root = ob.root if isinstance(ob, Handle) else ob
+    if any(part in carriers for part, _ in parts):
+        raise ValueError("lay: a part cannot be laid on itself")
+    if refine:
+        for part, matrix in parts:
+            bm = bmesh.new()
+            bm.from_mesh(part.data)
+            try:
+                bm.transform(matrix)
+                bmesh.ops.triangulate(bm, faces=list(bm.faces), quad_method='FIXED', ngon_method='EAR_CLIP')
+                while True:
+                    if all(e.calc_length() <= refine*(1+1e-6) for e in bm.edges):
+                        break
+                    edges = list(bm.edges)
+                    if len(bm.faces)+8*len(edges) > 500000:
+                        raise ValueError(f'lay: refine on {_core.given_name(part)!r} would exceed 500000 faces')
+                    bmesh.ops.subdivide_edges(bm, edges=edges, cuts=1, use_grid_fill=True)
+                    bmesh.ops.triangulate(bm, faces=list(bm.faces), quad_method='FIXED', ngon_method='EAR_CLIP')
+                bm.transform(matrix.inverted())
+                bm.normal_update()
+                bm.to_mesh(part.data)
+                part.data.update()
+            finally:
+                bm.free()
+    size = _core.in_mm(1.0)
+    place = _core.world(root)
+    inverse = place.inverted()
+    trees = []
+    for carrier in carriers:
+        bm = bmesh.new()
+        bm.from_mesh(carrier.data)
+        # Tessellate in the carrier's frame: BVH tessellation in scene space can
+        # choose another diagonal of a nonplanar face after a common rotation.
+        bmesh.ops.triangulate(bm, faces=list(bm.faces), quad_method='FIXED', ngon_method='EAR_CLIP')
+        bm.transform(inverse @ _core.world(carrier))
+        if size != 1:
+            bmesh.ops.scale(bm, vec=(size,)*3, verts=list(bm.verts))
+        trees.append(BVHTree.FromBMesh(bm))
+        bm.free()
+    up = Vector((0, 0, 1))
+    origin = Vector()
+    moved = []
+    for part, matrix in parts:
+        to_scene = matrix
+        points = [to_scene @ v.co for v in part.data.vertices]
+        moved.append((part, to_scene.inverted(), points))
+    every = [p for _, _, points in moved for p in points]
+    if not every:
+        return ob
+    carrier_points = [inverse @ _core.world(c) @ v.co for c in carriers for v in c.data.vertices]
+    cast = max((p - origin).length for p in every + carrier_points) + _core.mm(1e-3)
+    seated = []
+    for part, back, points in moved:
+        positions = []
+        for v, p in zip(part.data.vertices, points):
+            height = (p - origin).dot(up)
+            base = p - up * height
+            hits = [h for h in (t.ray_cast((base + up * cast) * size, -up) for t in trees) if h[0] is not None]
+            if not hits:
+                hits = [h for h in (t.find_nearest(base * size) for t in trees) if h[0] is not None]
+            spot = min(hits, key=lambda h: h[3])[0] / size
+            distance = (spot-base).length
+            if reach is not None and distance > reach + _core.mm(1e-6):
+                raise ValueError(f'lay: {_core.given_name(part)!r} needs distance {distance:g}, beyond reach {reach:g}')
+            positions.append(back @ (spot + up * height))
+        seated.append((part, positions))
+    for part, positions in seated:
+        for v, co in zip(part.data.vertices, positions):
+            v.co = co
+        part.data.update()
+    return ob

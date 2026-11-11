@@ -292,12 +292,12 @@ def _effective_type(c, k, j):
 # ---------------------------------------------------------------- URDF
 
 def _colour(ob):
-    tag = materials._nearest(ob)
+    tag = materials.mean_tag(ob)
     if tag is None:
         return None
     v = materials.look(tag)
     h = v["color"]
-    rgb = [int(h[i:i + 2], 16) / 255 for i in (1, 3, 5)]
+    rgb = [int(h[i:i + 2], 16) / 255 for i in (1, 3, 5)] if isinstance(h, str) else h
     return materials._name(tag), (*rgb, v["opacity"])
 
 

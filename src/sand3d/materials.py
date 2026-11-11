@@ -1,7 +1,7 @@
 """What a part is made of: a named preset, its values changed where a program says so.
 
 `material` tags an object — a part, or the root of a group or an assembly — and
-never touches a mesh. Every mesh then takes the material of its nearest tagged
+leaves the mesh untouched. Every mesh then takes the material of its nearest tagged
 ancestor-or-self: a call on an assembly reaches every part under it that names
 none of its own, in whatever order the calls come, and a detail attached later
 inherits. The tag lives on the object, so it goes through every edit that rebuilds
@@ -16,6 +16,9 @@ sets none never runs it, and builds and exports exactly as before.
 """
 import difflib
 import json
+import inspect
+import math
+from contextlib import contextmanager
 
 import bpy
 
@@ -23,6 +26,8 @@ from . import _core
 
 #: Custom property holding an object's tag, and a material's look.
 TAG = "s3d_material"
+FUNCTIONS = {}
+FUNCTION = "function"
 
 #: The presets: sRGB colour, roughness, and what else sets the look apart.
 PRESETS = {
@@ -51,6 +56,16 @@ PRESETS = {
     "leather":        dict(color="#6b3e26", roughness=0.5),
     "marble":         dict(color="#e8e6e1", roughness=0.15, coat=0.4),
     "concrete":       dict(color="#9a9893", roughness=0.85),
+    # natural surfaces: flat average colours, no texture or volume absorption
+    "bark":           dict(color="#69503b", roughness=0.9),
+    "leaf":           dict(color="#52703d", roughness=0.5, coat=0.12),
+    "moss":           dict(color="#596344", roughness=0.95),
+    "grass":          dict(color="#68794a", roughness=0.8),
+    "rock":           dict(color="#85827b", roughness=0.9),
+    "soil":           dict(color="#66503c", roughness=1.0),
+    "sand":           dict(color="#c5b58e", roughness=0.9),
+    "water":          dict(color="#f4f8f8", roughness=0.08, transmission=1.0),
+    "snow":           dict(color="#eef1f3", roughness=0.85, coat=0.03),
     # a surface that gives light, in its own colour
     "light":          dict(color="#fff1dc", roughness=0.5, emission=12.0),
 }
@@ -59,13 +74,21 @@ PRESETS = {
 def material(ob, kind, color=None, roughness=None, metallic=None, opacity=None, emission=None):
     """Kind: oak walnut pine birch steel brushed_steel chrome aluminium brass copper
     painted_metal plastic glossy_plastic rubber glass ceramic fabric velvet leather marble
-    concrete light; color "#rrggbb".
+    concrete bark leaf moss grass rock soil sand water snow light; color "#rrggbb".
 
     `ob` — a part, a group, an assembly or a list — made of `kind`, one of the presets,
     its colour (sRGB: "#rrggbb" or (r, g, b) in 0..1), roughness, metallic, opacity (1
     opaque, 0 invisible) or emission (the light it gives, in its own colour) changed where
     given. On a group or an assembly, every part under it that names none of its own: the
-    nearest call wins, in whatever order the calls come. Returns `ob`."""
+    nearest call wins, in whatever order the calls come. Returns `ob`.
+
+    color may be a deterministic callable. inspect.signature must declare exactly
+    three or four or five positional parameters, no variadics or keyword-only parameters:
+    color(x, y, z[, n[, u]]), at each face centre in local space, in program units;
+    n is its outward unit normal tuple; u is its maker's lengthwise 0..1. Readers evaluate once per face in index
+    order, without caching. Functions live in a Python registry referenced by the
+    object tag; copy keeps the reference, join and merge keep the first object's.
+    Functions are session-local and are not serialised into Blender files."""
     from .assembly import Handle
     from .edit import _flat
     if kind not in PRESETS:
@@ -73,7 +96,12 @@ def material(ob, kind, color=None, roughness=None, metallic=None, opacity=None, 
         raise ValueError(f"material: no preset named {kind!r}" + (f" — did you mean {' or '.join(map(repr, near))}?"
                                                                   if near else "")
                          + f"; the presets: {', '.join(PRESETS)}")
-    given = {"color": None if color is None else _hex(color)}
+    function = None
+    if callable(color):
+        arity(color)
+        function = str(len(FUNCTIONS))
+        FUNCTIONS[function] = color
+    given = {"color": None if color is None or function is not None else _hex(color)}
     for name, value, top in (("roughness", roughness, 1), ("metallic", metallic, 1), ("opacity", opacity, 1),
                              ("emission", emission, None)):
         if value is not None:
@@ -82,7 +110,7 @@ def material(ob, kind, color=None, roughness=None, metallic=None, opacity=None, 
                                  + ("between 0 and 1" if top else "of 0 or more")
                                  + (" — 1 is opaque, 0 invisible" if name == "opacity" else ""))
         given[name] = None if value is None else float(value)
-    tag = json.dumps({"kind": kind, **{k: v for k, v in given.items() if v is not None}}, sort_keys=True)
+    tag = json.dumps({"kind": kind, **({FUNCTION: function} if function is not None else {}), **{k: v for k, v in given.items() if v is not None}}, sort_keys=True)
     targets = [t.root if isinstance(t, Handle) else t for t in _flat([ob])]
     for target in targets:                  # all checked before any is tagged
         if not isinstance(target, bpy.types.Object):
@@ -108,13 +136,14 @@ def _hex(color):
 
 def _linear(hex_color):
     """'#rrggbb' (sRGB) → linear RGBA, what Blender's colour sockets hold."""
-    srgb = [int(hex_color[i:i + 2], 16) / 255 for i in (1, 3, 5)]
+    srgb = [int(hex_color[i:i + 2], 16) / 255 for i in (1, 3, 5)] if isinstance(hex_color, str) else hex_color
     return (*(c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4 for c in srgb), 1.0)
 
 
 def look(tag):
     """The values a tag stands for: its preset, changed where the call said."""
     spec = json.loads(tag)
+    spec.pop(FUNCTION, None)
     values = dict(metallic=0.0, opacity=1.0, transmission=0.0, coat=0.0, sheen=0.0, emission=0.0)
     values.update(PRESETS[spec.pop("kind")])
     values.update(spec)
@@ -125,7 +154,10 @@ def _name(tag):
     """A material's name: its preset, and what the program changed in it."""
     spec = json.loads(tag)
     kind = spec.pop("kind")
-    return " ".join([kind, *(v if k == "color" else f"{k}={v:g}" for k, v in sorted(spec.items()))])
+    if FUNCTION in spec:
+        spec.pop(FUNCTION, None)
+        kind += " face colours"
+    return " ".join([kind, *(str(v) if k == "color" else f"{k}={v:g}" for k, v in sorted(spec.items()))])
 
 
 def _material(tag, made):
@@ -188,3 +220,133 @@ def dressed():
     """Whether any mesh of the scene wears one of our materials."""
     return _core.dressed and any(ob.type == "MESH" and any(m is not None and TAG in m for m in ob.data.materials)
                                  for ob in bpy.data.objects)
+
+
+def arity(fn):
+    """Explicit positional parameters select coordinates, normal and lengthwise u."""
+    try:
+        params = list(inspect.signature(fn).parameters.values())
+        if len(params) in (3, 4, 5) and all(p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD) for p in params):
+            return len(params)
+    except (ValueError, TypeError):
+        pass
+    raise ValueError("material: color callable must declare three or four or five positional parameters")
+
+
+def face_colors(ob):
+    """Linear RGBA per polygon, or None; evaluate in local space."""
+    tag = _nearest(ob)
+    key = json.loads(tag).get(FUNCTION) if tag else None
+    if key is None:
+        return None
+    fn = FUNCTIONS[key]
+    count = arity(fn)
+    mesh = ob.data
+    from ._coordinates import face_u
+    parameter = face_u(mesh)
+    if count == 5 and (parameter is None or any(not math.isfinite(u) for u in parameter)):
+        raise ValueError(f"material: {_core.given_name(ob)!r} has no lengthwise u; "
+                         "use loft, wire, sweep, revolve, dome, sphere, cone or cylinder")
+    result = []
+    for face in mesh.polygons:
+        centre = tuple(face.center)
+        args = (*centre, tuple(face.normal)) if count >= 4 else centre
+        if count == 5:
+            args += (parameter[face.index],)
+        try:
+            value = fn(*args)
+            if isinstance(value, str):
+                rgba = _linear(_hex(value))
+            else:
+                if not isinstance(value, (tuple, list)) or len(value) != 3 or not all(
+                        isinstance(c, (int, float)) and not isinstance(c, bool) and math.isfinite(c) and 0 <= c <= 1 for c in value):
+                    raise ValueError("not a colour")
+                rgba = (*(c/12.92 if c <= .04045 else ((c+.055)/1.055)**2.4 for c in value), 1.)
+            result.append(rgba)
+        except (ValueError, TypeError, OverflowError) as exc:
+            raise ValueError(f"material: invalid colour at face centre {centre}") from exc
+    return result
+
+
+def mean_tag(ob):
+    """Area-weighted linear mean, encoded as sRGB for single-colour readers."""
+    tag = _nearest(ob)
+    colors = face_colors(ob)
+    if colors is None:
+        return tag
+    mesh = ob.data
+    total = sum(p.area for p in mesh.polygons)
+    rgb = [sum(p.area*c[i] for p,c in zip(mesh.polygons, colors))/total if total else 0 for i in range(3)]
+    spec = json.loads(tag)
+    spec.pop(FUNCTION, None)
+    spec['color'] = tuple(12.92*c if c <= .0031308 else 1.055*c**(1/2.4)-.055 for c in rgb)
+    return json.dumps(spec, sort_keys=True)
+
+
+COLOR_ATTRIBUTE = "Colour"
+
+
+def put_colors(mesh, colors):
+    """One linear colour on every corner of a polygon."""
+    attr = mesh.color_attributes.get(COLOR_ATTRIBUTE)
+    if attr is None:
+        attr = mesh.color_attributes.new(name=COLOR_ATTRIBUTE, type='FLOAT_COLOR', domain='CORNER')
+    for face, color in zip(mesh.polygons, colors):
+        for i in face.loop_indices:
+            attr.data[i].color = color
+    mesh.color_attributes.active_color = attr
+    mesh.color_attributes.render_color_index = list(mesh.color_attributes).index(attr)
+
+
+@contextmanager
+def exporting(root, mode="material"):
+    """Lend independent corner-coloured meshes and shared surface materials.
+
+    A surface that gives light keeps its colour in its material, where its emission
+    reads it — the mean of a colour function's — so two glows of different colours
+    are two materials; every other colour goes to the corners, on a white base."""
+    from .meshfile import _meshes
+    saved, made = [], {}
+    parts = _meshes(root)
+    before = set(bpy.data.materials)
+    was_dressed = _core.dressed
+    try:
+        for ob in parts:
+            colors = face_colors(ob)
+            if colors is None and mode == "material":
+                continue
+            source = _nearest(ob) or '{"kind":"plastic", "color":"#cccccc"}'
+            v = look(source)
+            glow = json.loads(mean_tag(ob))["color"] if colors is not None else v["color"]
+            if colors is None:
+                colors = [_linear(v['color'])] * len(ob.data.polygons)
+            original = ob.data
+            mesh = original.copy()
+            saved.append((ob, original, mesh))
+            ob.data = mesh
+            put_colors(mesh, colors)
+            spec = {"kind": "plastic", **v} if mode == "vertex" else json.loads(source)
+            spec.pop(FUNCTION, None)
+            spec['color'] = glow if v['emission'] else '#ffffff'
+            tag = json.dumps(spec, sort_keys=True)
+            mat = _material(tag, made)
+            if mode == "vertex":
+                mat.name = "Surface " + str(list(made).index(tag) + 1)
+            bsdf = mat.node_tree.nodes['Principled BSDF']
+            if mat.node_tree.nodes.get('Face Colour') is None:      # the base colour is the corners'
+                node = mat.node_tree.nodes.new('ShaderNodeVertexColor')
+                node.name = 'Face Colour'
+                node.layer_name = COLOR_ATTRIBUTE
+                mat.node_tree.links.new(node.outputs['Color'], bsdf.inputs['Base Color'])
+            mesh.materials.clear()
+            mesh.materials.append(mat)
+        if saved:
+            _core.dressed = True
+        yield
+    finally:
+        _core.dressed = was_dressed
+        for ob, original, mesh in reversed(saved):
+            ob.data = original
+            bpy.data.meshes.remove(mesh)
+        for mat in set(bpy.data.materials) - before:
+            bpy.data.materials.remove(mat)
