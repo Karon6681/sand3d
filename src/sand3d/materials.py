@@ -272,10 +272,11 @@ def face_colors(ob):
     return result
 
 
-def mean_tag(ob):
+def mean_tag(ob, colors=None):
     """Area-weighted linear mean, encoded as sRGB for single-colour readers."""
     tag = _nearest(ob)
-    colors = face_colors(ob)
+    if colors is None:
+        colors = face_colors(ob)
     if colors is None:
         return tag
     mesh = ob.data
@@ -321,7 +322,7 @@ def exporting(root, mode="material"):
                 continue
             source = _nearest(ob) or '{"kind":"plastic", "color":"#cccccc"}'
             v = look(source)
-            glow = json.loads(mean_tag(ob))["color"] if colors is not None else v["color"]
+            glow = json.loads(mean_tag(ob, colors))["color"] if colors is not None else v["color"]
             if colors is None:
                 colors = [_linear(v['color'])] * len(ob.data.polygons)
             original = ob.data

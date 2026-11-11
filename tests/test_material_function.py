@@ -30,6 +30,14 @@ class MaterialFunction(unittest.TestCase):
         self.assertEqual(len(calls), len(a.data.polygons))
         self.assertEqual(len(colors), len(calls))
 
+    def test_export_evaluates_once(self):
+        from unittest.mock import patch
+        a = s3d.box('a', 20, 20, 20)
+        s3d.material(a, 'plastic', color=lambda x,y,z: '#336699')
+        with patch.object(materials, 'face_colors', wraps=materials.face_colors) as evaluate:
+            with materials.exporting(a):
+                self.assertEqual(evaluate.call_count, 1)
+
     def test_examples(self):
         a = s3d.loft('limb', *(s3d.station(z, 20, 20) for z in (0, 80, 160, 240)))
         s3d.material(a, 'plastic', color=lambda x,y,z: '#c9a137' if int(z//80)%2 else '#2c2d33')
