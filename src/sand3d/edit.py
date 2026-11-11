@@ -1374,72 +1374,162 @@ def merge(*obs):
     return first
 
 
+def _mesh_array(elements, prop, width=1, dtype=np.int32):
+    values = np.empty(len(elements) * width, dtype=dtype)
+    elements.foreach_get(prop, values)
+    return values.reshape(-1, width) if width != 1 else values
+
+
+def _mesh_geometry(parts):
+    """Coordinates and polygon loops in input order, with reflected rings reversed."""
+    coordinates, vertices, sizes = [], [], []
+    base = 0
+    for me, matrix in parts:
+        # Keep mathutils' single-precision multiply and addition order.
+        coordinates.extend(matrix @ v.co for v in me.vertices)
+        ring = _mesh_array(me.loops, "vertex_index")
+        count = _mesh_array(me.polygons, "loop_total")
+        if matrix.to_3x3().determinant() < 0:
+            starts = np.repeat(np.cumsum(count) - count, count)
+            ring = ring[2 * starts + np.repeat(count, count) - 1 - np.arange(len(ring))]
+        vertices.append(ring + base)
+        sizes.append(count)
+        base += len(me.vertices)
+    return (np.asarray(coordinates, dtype=np.float32).reshape(-1, 3),
+            np.concatenate(vertices), np.concatenate(sizes))
+
+
 def _concat(meshes):
     """The meshes, each moved by its matrix, as one bmesh; tag attributes kept."""
-    face_tags, edge_tags = [], []
-    verts, faces, edge_keys = [], [], []
-    smooth_faces, sharp_edges = [], []
-    point_attributes = {}
-    for me, _ in meshes:
-        for attr in me.attributes:
-            if attr.domain == "POINT" and attr.data_type == "FLOAT":
-                point_attributes.setdefault(attr.name, [])
-    attributes = {}
-    supported = {"FLOAT": "float", "INT": "int", "BOOLEAN": "bool", "FLOAT_VECTOR": "float_vector"}
-    for me, _ in meshes:
-        for a in me.attributes:
-            if a.domain == "FACE" and a.data_type in supported and not a.name.startswith(_core.FACE_TAG):
-                attributes[a.name] = (a.data_type, [])
-    for me, m in meshes:
-        for name, values in point_attributes.items():
-            attr = me.attributes.get(name)
-            values.extend([d.value for d in attr.data] if attr is not None else [float("nan")]*len(me.vertices))
-        smooth_faces.extend(p.use_smooth for p in me.polygons)
-        for name, (kind, values) in attributes.items():
-            attr = me.attributes.get(name)
-            default = (0,0,0) if kind == "FLOAT_VECTOR" else 0
-            values.extend([getattr(d, "vector" if kind == "FLOAT_VECTOR" else "value")[:] if kind == "FLOAT_VECTOR" else d.value for d in attr.data] if attr is not None else [default]*len(me.polygons))
-        flip = m.to_3x3().determinant() < 0
-        base = len(verts)
-        verts += [m @ v.co for v in me.vertices]
-        fl = {a.name: [d.value for d in a.data] for a in me.attributes
-              if a.name.startswith(_core.FACE_TAG)}
-        el = {a.name: [d.value for d in a.data] for a in me.attributes
-              if a.name.startswith(_core.EDGE_TAG)}
-        for i, p in enumerate(me.polygons):
-            vs = [base + v for v in p.vertices]
-            faces.append(vs[::-1] if flip else vs)
-            face_tags.append({n[len(_core.FACE_TAG):] for n, vals in fl.items() if vals[i]})
-        for i, e in enumerate(me.edges):
-            if e.use_edge_sharp:
-                sharp_edges.append(frozenset((base+e.vertices[0],base+e.vertices[1])))
-            tags = {n[len(_core.EDGE_TAG):] for n, vals in el.items() if vals[i]}
-            if tags:
-                edge_keys.append((frozenset((base + e.vertices[0], base + e.vertices[1])), tags))
-    bm = bmesh.new()
-    point_layers = {name: bm.verts.layers.float.new(name) for name in point_attributes}
-    bv = [bm.verts.new(v) for v in verts]
-    for name,values in point_attributes.items():
-        layer = point_layers[name]
-        for v,value in zip(bv,values):
-            v[layer] = value
-    for f in faces:
-        bm.faces.new([bv[i] for i in f])
-    bm.verts.index_update()
-    bm.faces.index_update()
-    bm.edges.index_update()
-    lookup = {frozenset((e.verts[0].index, e.verts[1].index)): e.index for e in bm.edges}
-    _core.add_tags(bm, dict(enumerate(face_tags)), {lookup[k]: t for k, t in edge_keys if k in lookup})
-    for name, (kind, values) in attributes.items():
-        layer = getattr(bm.faces.layers, supported[kind]).new(name)
-        for face, value in zip(bm.faces, values):
-            face[layer] = value
-    for face, smooth in zip(bm.faces, smooth_faces):
-        face.smooth = smooth
-    bm.edges.ensure_lookup_table()
-    for key in sharp_edges:
-        bm.edges[lookup[key]].smooth = False
-    return bm
+    co, rings, counts = _mesh_geometry(meshes)
+    starts = np.cumsum(counts, dtype=np.int32) - counts
+    # BM_face_create_verts creates the closing edge first, then the ring's edges.
+    previous = np.arange(len(rings)) - 1
+    previous[starts] = starts + counts - 1
+    pairs = np.column_stack((rings[previous], rings))
+    keys = np.sort(pairs, axis=1)
+    unique, first, inverse = np.unique(keys, axis=0, return_index=True, return_inverse=True)
+    order = np.argsort(first)
+    rank = np.empty(len(order), dtype=np.int32)
+    rank[order] = np.arange(len(order))
+    edges = pairs[first[order]]
+    mesh = bpy.data.meshes.new("_s3d_concat")
+    try:
+        mesh.vertices.add(len(co))
+        mesh.vertices.foreach_set("co", co.ravel())
+        mesh.edges.add(len(edges))
+        mesh.edges.foreach_set("vertices", edges.ravel())
+        mesh.loops.add(len(rings))
+        mesh.loops.foreach_set("vertex_index", rings)
+        # A loop uses its outgoing edge, rather than its incoming edge.
+        following = np.arange(len(rings)) + 1
+        following[starts + counts - 1] = starts
+        mesh.loops.foreach_set("edge_index", rank[inverse[following]])
+        mesh.polygons.add(len(counts))
+        mesh.polygons.foreach_set("loop_start", starts)
+        mesh.polygons.foreach_set("loop_total", counts)
+        supported = {"FLOAT": ("value", 1, np.float32), "INT": ("value", 1, np.int32),
+                     "BOOLEAN": ("value", 1, np.bool_), "FLOAT_VECTOR": ("vector", 3, np.float32)}
+        point = {}
+        face = {}
+        face_tags, edge_tags = set(), set()
+        for me, _ in meshes:
+            for a in me.attributes:
+                if a.domain == "POINT" and a.data_type == "FLOAT":
+                    point.setdefault(a.name, "FLOAT")
+                if a.domain == "FACE" and a.data_type in supported and not a.name.startswith(_core.FACE_TAG):
+                    face[a.name] = a.data_type
+                if a.name.startswith(_core.FACE_TAG) and np.any(_mesh_array(a.data, "value", dtype=np.bool_)):
+                    face_tags.add(a.name)
+                if a.name.startswith(_core.EDGE_TAG) and np.any(_mesh_array(a.data, "value", dtype=np.bool_)):
+                    edge_tags.add(a.name)
+        def attribute(name, kind, domain, values):
+            prop, width, dtype = supported[kind]
+            a = mesh.attributes.get(name)
+            if a is None:
+                a = mesh.attributes.new(name, kind, domain)
+            a.data.foreach_set(prop, np.asarray(values, dtype=dtype).ravel())
+
+        def concatenate(name, kind, domain, default=0):
+            prop, width, dtype = supported[kind]
+            arrays = []
+            for me, _ in meshes:
+                a = me.attributes.get(name)
+                n = len(me.vertices) if domain == "POINT" else len(me.polygons)
+                arrays.append(_mesh_array(a.data, prop, width, dtype) if a is not None else
+                              np.full((n, width) if width != 1 else n, default, dtype=dtype))
+            return np.concatenate(arrays)
+
+        for name, kind in point.items():
+            attribute(name, kind, "POINT", concatenate(name, kind, "POINT", float("nan")))
+        for name in sorted(face_tags):
+            attribute(name, "BOOLEAN", "FACE", concatenate(name, "BOOLEAN", "FACE"))
+        # Map source edge indices to the edges that face creation retained.
+        source_keys, sharp = [], []
+        base = 0
+        for me, _ in meshes:
+            source_keys.append(np.sort(_mesh_array(me.edges, "vertices", 2) + base, axis=1))
+            sharp.append(_mesh_array(me.edges, "use_edge_sharp", dtype=np.bool_))
+            base += len(me.vertices)
+        source_keys = np.concatenate(source_keys)
+        stride = max(len(co), 1)
+        encoded = unique[:, 0].astype(np.int64) * stride + unique[:, 1]
+        source = source_keys[:, 0].astype(np.int64) * stride + source_keys[:, 1]
+        found = np.searchsorted(encoded, source)
+        valid = found < len(encoded)
+        valid[valid] &= encoded[found[valid]] == source[valid]
+        target = np.zeros(len(source), dtype=np.int32)
+        target[valid] = rank[found[valid]]
+        edge_sharp = np.zeros(len(edges), dtype=np.bool_)
+        edge_sharp[target[valid]] = np.concatenate(sharp)[valid]
+        for name in sorted(edge_tags):
+            values = np.concatenate([_mesh_array(me.attributes[name].data, "value", dtype=np.bool_)
+                                     if name in me.attributes else np.zeros(len(me.edges), dtype=np.bool_)
+                                     for me, _ in meshes])
+            out = np.zeros(len(edges), dtype=np.bool_)
+            out[target[valid]] = values[valid]
+            if np.any(out):
+                attribute(name, "BOOLEAN", "EDGE", out)
+                edge_sharp |= out
+        for name, kind in face.items():
+            attribute(name, kind, "FACE", concatenate(name, kind, "FACE"))
+        smooth = np.concatenate([_mesh_array(me.polygons, "use_smooth", dtype=np.bool_) for me, _ in meshes])
+        mesh.polygons.foreach_set("use_smooth", smooth)
+        mesh.edges.foreach_set("use_edge_sharp", edge_sharp)
+        # Reserved face attributes used to be custom bmesh layers, not flags.
+        aliases = {}
+        for name in (".select_poly", ".hide_poly", "material_index"):
+            if name in face:
+                a = mesh.attributes[name]
+                a.name = "_s3d_concat_" + name
+                aliases[name] = a.name
+        bm = bmesh.new()
+        for name in point:
+            bm.verts.layers.float.new(name)
+        for name in sorted(face_tags):
+            bm.faces.layers.bool.new(name)
+        for name in sorted(edge_tags):
+            if name in mesh.attributes:
+                bm.edges.layers.bool.new(name)
+        layers = {"FLOAT": "float", "INT": "int", "BOOLEAN": "bool", "FLOAT_VECTOR": "float_vector"}
+        for name, kind in face.items():
+            getattr(bm.faces.layers, layers[kind]).new(name)
+        bm.from_mesh(mesh)
+        if aliases:
+            for elements in (bm.verts, bm.edges, bm.faces):
+                for element in elements:
+                    element.select = False
+                    element.hide = False
+        for name, alias in aliases.items():
+            collection = getattr(bm.faces.layers, layers[face[name]])
+            source, target_layer = collection[alias], collection[name]
+            for polygon in bm.faces:
+                polygon[target_layer] = polygon[source]
+            collection.remove(source)
+        bm.normal_update()
+        return bm
+    finally:
+        bpy.data.meshes.remove(mesh)
 
 
 def scale(ob, s):
