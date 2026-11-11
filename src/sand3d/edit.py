@@ -1832,9 +1832,14 @@ def _facet_surface(bm):
 
 def _span(co):
     """(lo, hi) corners of the box round flat coordinates `co`, or None if there are none."""
-    if not co:
+    if not len(co):
         return None
-    return [min(co[a::3]) for a in range(3)], [max(co[a::3]) for a in range(3)]
+    values = np.asarray(co, dtype=np.float64).reshape(-1, 3)
+    if np.isnan(values).any():
+        return [min(co[a::3]) for a in range(3)], [max(co[a::3]) for a in range(3)]
+    # argmin/argmax keep the first equal value, including the sign of zero.
+    axes = np.arange(3)
+    return values[values.argmin(axis=0), axes].tolist(), values[values.argmax(axis=0), axes].tolist()
 
 
 def _thinnest(parts, size):

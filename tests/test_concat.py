@@ -98,3 +98,23 @@ class Concat(unittest.TestCase):
             self.assertTrue(bm.edges[1][bm.edges.layers.bool['s3d_edge:rim']])
         finally:
             bm.free()
+
+    def test_bounds_keep_double_subtraction_and_first_signed_zero(self):
+        from sand3d import _core
+        mesh = bpy.data.meshes.new('bounds')
+        ob = bpy.data.objects.new('bounds', mesh)
+        try:
+            mesh.from_pydata([(-1e20, -0., 3), (1e-20, 0., 1), (1.25, 0., 2)], [], [])
+            for axis in range(3):
+                values = [v.co[axis] for v in mesh.vertices]
+                self.assertEqual(_core.extent(ob, axis), max(values) - min(values))
+            coordinates = [c for v in mesh.vertices for c in v.co]
+            lo, hi = edit._span(coordinates)
+            self.assertEqual(lo, [min(coordinates[a::3]) for a in range(3)])
+            self.assertEqual(hi, [max(coordinates[a::3]) for a in range(3)])
+            self.assertTrue(np.signbit(lo[1]))
+            self.assertTrue(np.signbit(hi[1]))
+            self.assertIsNone(edit._span([]))
+        finally:
+            bpy.data.objects.remove(ob)
+            bpy.data.meshes.remove(mesh)

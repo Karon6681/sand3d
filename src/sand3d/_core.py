@@ -9,6 +9,7 @@ import math
 
 import bpy  # before bmesh, which the bpy module only provides once loaded
 import bmesh
+import numpy as np
 from mathutils import Matrix, Vector, geometry
 
 
@@ -401,8 +402,13 @@ def new_object(name, bm):
 
 def extent(ob, axis):
     """The size of `ob`'s own mesh along an axis (0, 1, 2), before any placement."""
-    values = [v.co[axis] for v in ob.data.vertices]
-    return max(values) - min(values)
+    co = np.empty(len(ob.data.vertices) * 3, dtype=np.float32)
+    ob.data.vertices.foreach_get("co", co)
+    values = co.reshape(-1, 3)[:, axis]
+    if not len(values) or np.isnan(values).any():
+        values = values.tolist()
+        return max(values) - min(values)
+    return float(values[values.argmax()]) - float(values[values.argmin()])
 
 
 def bridge(bm, a, b):
