@@ -85,3 +85,22 @@ class Hooks(unittest.TestCase):
             for i in range(80):
                 s3d.smooth(s3d.box(f'part{i}', 1, 1, 1))
         self.assertEqual(visits, [])
+
+    def test_children_deformed_through_their_parent_are_shaded(self):
+        def state():
+            return [(ob.name, [p.use_smooth for p in ob.data.polygons],
+                     [e.use_edge_sharp for e in ob.data.edges])
+                    for ob in bpy.data.objects if ob.type == 'MESH']
+        for deform in (lambda ob: s3d.bend(ob, 60, axis="+Z", toward="+X"),
+                       lambda ob: s3d.twist(ob, 90, axis="+Z"),
+                       lambda ob: s3d.taper(ob, .5, axis="+Z")):
+            s3d.empty_scene()
+            root = s3d.box('root', 2, 2, 10)
+            child = s3d.smooth(s3d.cylinder('child', 4, 10), 1)
+            child.parent = root
+            s3d.material(child, 'oak')
+            deform(root)
+            before = state()
+            _core.shade_meshes()
+            materials.resolve()
+            self.assertTrue(before == state(), "a child deformed through its parent kept stale shading")

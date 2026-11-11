@@ -410,6 +410,7 @@ def _replace_mesh(ob, bm):
     bm.to_mesh(mesh)
     bm.free()
     ob.data = mesh
+    _core.hook_objects.append(ob)
     if old.users == 0:
         bpy.data.meshes.remove(old)
     mesh.name = _core.given_name(ob)

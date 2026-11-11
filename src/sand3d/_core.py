@@ -550,7 +550,9 @@ def turn_steps(paths):
 
 
 def own_mesh(ob):
-    """Detach shared data before a verb writes to this part alone."""
+    """Detach shared data before a verb writes to this part alone; the call's hooks then
+    revisit the part, even when the verb was handed only its parent."""
+    hook_objects.append(ob)
     if ob.data.users > 1:
         ob.data = ob.data.copy()
     return ob.data
