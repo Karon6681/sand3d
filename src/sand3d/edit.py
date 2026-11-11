@@ -1563,8 +1563,12 @@ def dent(ob, points, r, depth, *, coords="local"):
         centres = [own @ p for p in centres]
     bm = bmesh.new()
     bm.from_mesh(ob.data)
+    vertices = None
     for c in centres:
-        _densify(bm, c, r)
+        if vertices is None:
+            vertices = _vertex_tree(bm)
+        if _densify(bm, c, r, vertices=vertices):
+            vertices = None
     bm.normal_update()
     tree = KDTree(len(bm.verts))
     for v in bm.verts:
@@ -1583,12 +1587,26 @@ def dent(ob, points, r, depth, *, coords="local"):
     return ob
 
 
-def _densify(bm, c, r, cuts=4):
+def _vertex_tree(bm):
+    tree = KDTree(len(bm.verts))
+    for i, v in enumerate(bm.verts):
+        tree.insert(v.co, i)
+    tree.balance()
+    return tree
+
+
+def _densify(bm, c, r, cuts=4, *, vertices=None):
     """Give the surface round `c` vertices to press: where none lies within r/`cuts` of
     it (a flat face meshed as one n-gon has none), cut the faces within `r` of it by
     planes r/`cuts` apart, both ways across the nearest face's normal."""
-    if any((v.co - c).length < r / cuts for v in bm.verts):
-        return
+    if vertices is None:
+        vertices = _vertex_tree(bm)
+    radius = r / cuts
+    # KDTree uses float distances. Widen only the candidate search, then retain
+    # the original Vector subtraction and strict predicate at the boundary.
+    margin = max(radius, *(abs(x) for x in c)) * 1e-6
+    if any((co - c).length < radius for co, index, distance in vertices.find_range(c, radius + margin)):
+        return False
     bm.faces.ensure_lookup_table()
     tree = BVHTree.FromBMesh(bm)
     near = tree.find_nearest_range(c, r)
@@ -1603,6 +1621,7 @@ def _densify(bm, c, r, cuts=4):
             bmesh.ops.bisect_plane(bm, geom=geom, dist=_core.mm(WELD), plane_co=c + axis * (k * r / cuts), plane_no=axis)
             bm.faces.ensure_lookup_table()
             near = BVHTree.FromBMesh(bm).find_nearest_range(c, r)
+    return True
 
 
 # ---------------------------------------------------------------- organic surfaces: blend, displace
