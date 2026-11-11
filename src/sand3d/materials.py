@@ -351,6 +351,5 @@ def exporting(root, mode="material"):
         _core.dressed = was_dressed
         for ob, original, mesh in reversed(saved):
             ob.data = original
-            bpy.data.meshes.remove(mesh)
-        for mat in set(bpy.data.materials) - before:
-            bpy.data.materials.remove(mat)
+        bpy.data.batch_remove([*(mesh for ob, original, mesh in saved),
+                               *(set(bpy.data.materials) - before)])

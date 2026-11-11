@@ -81,13 +81,8 @@ def _evaluate(base_mesh, tool_meshes, operation, self_intersect=False):
     depsgraph = bpy.context.evaluated_depsgraph_get()
     result = bpy.data.meshes.new_from_object(base.evaluated_get(depsgraph), preserve_all_data_layers=True,
                                              depsgraph=depsgraph)
-    for t in tools:
-        bpy.data.objects.remove(t)
-    bpy.data.objects.remove(base)
-    bpy.data.collections.remove(coll)
-    for me in [base_mesh, *tool_meshes]:
-        if me.users == 0:
-            bpy.data.meshes.remove(me)
+    bpy.data.batch_remove([*tools, base, coll])
+    bpy.data.batch_remove([me for me in {base_mesh, *tool_meshes} if me.users == 0])
     return result
 
 
@@ -590,27 +585,37 @@ def _flat(items):
 
 
 def _delete_tree(ob):
-    """Remove `ob` and everything under it."""
-    for child in list(ob.children):
-        _delete_tree(child)
-    delete(ob)
+    """Remove `ob` and everything under it, children before parents."""
+    children = _children()
+    parts = []
+    def walk(part):
+        for child in children.get(part, ()):
+            walk(child)
+        parts.append(part)
+    walk(ob)
+    delete(parts)
 
 
 def delete(ob):
     """Remove it.
 
     Remove `ob` from the scene; an object a verb used up is gone already."""
-    if isinstance(ob, (list, tuple)):
-        for part in ob:
-            delete(part)
-        return
-    if _guard.removed(ob):
-        return
-    _guard.deleting(ob)
-    mesh = ob.data if ob.type == "MESH" else None
-    bpy.data.objects.remove(ob)
-    if mesh is not None and mesh.users == 0:
-        bpy.data.meshes.remove(mesh)
+    parts, seen = [], set()
+    def collect(part):
+        if isinstance(part, (list, tuple)):
+            for child in part:
+                collect(child)
+        elif not _guard.removed(part) and part not in seen:
+            seen.add(part)
+            parts.append(part)
+    collect(ob)
+    meshes = set()
+    for part in parts:
+        _guard.deleting(part)
+        if part.type == "MESH":
+            meshes.add(part.data)
+    bpy.data.batch_remove(parts)
+    bpy.data.batch_remove([mesh for mesh in meshes if mesh.users == 0])
 
 
 # ---------------------------------------------------------------- holes and pockets
