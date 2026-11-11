@@ -194,13 +194,13 @@ def _nearest(ob):
     return None
 
 
-def resolve():
+def resolve(objects=None):
     """Give every mesh the material of its nearest tagged ancestor-or-self; take ours off
     a mesh that has none any more. Nothing to do in a program that sets no material."""
     if not _core.dressed:
         return
     made = {m[TAG]: m for m in bpy.data.materials if TAG in m}
-    for ob in sorted(bpy.data.objects, key=lambda o: o.name):
+    for ob in sorted(bpy.data.objects if objects is None else objects, key=lambda o: o.name):
         if ob.type != "MESH":
             continue
         tag = _nearest(ob)

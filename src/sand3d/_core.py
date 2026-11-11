@@ -128,9 +128,51 @@ def given_name(ob):
     return ob.get(NAME, ob.name)
 
 
+# Objects touched during the current public call. References live only until its hooks
+# finish: removed IDs are filtered there, so a reused address cannot hit old state.
+hook_objects = []
+hook_all = False
+
+
+def touch(value):
+    """Conservatively include object arguments and results, including nested calls."""
+    global hook_all
+    from .assembly import Handle
+    if isinstance(value, Handle):
+        value = value.root
+    if isinstance(value, bpy.types.Object):
+        try:
+            if value.type == "EMPTY":
+                hook_all = True          # descendants may inherit or have been rebuilt
+            hook_objects.append(value)
+        except ReferenceError:
+            pass
+    elif isinstance(value, (list, tuple)):
+        for item in value:
+            touch(item)
+    elif isinstance(value, dict):
+        for item in value.values():
+            touch(item)
+
+
+def touched():
+    """Live candidates; None requests the conservative whole-scene path."""
+    if hook_all:
+        return None
+    live = {}
+    for ob in hook_objects:
+        try:
+            if ob.as_pointer():
+                live[ob.as_pointer()] = ob
+        except ReferenceError:
+            pass
+    return list(live.values())
+
+
 def link(ob):
     """Put `ob` in the scene, where the exporter and the depsgraph see it."""
     bpy.context.scene.collection.objects.link(ob)
+    hook_objects.append(ob)
     return ob
 
 
