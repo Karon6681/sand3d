@@ -93,7 +93,8 @@ def _verb(fn):
                 _placed_again(result)
         if name == "transform":
             _placed_again(result)
-        _core.shade_meshes()
+        if not _guard.calls:
+            _core.shade_meshes(_core.touched())
         return result
     return verb
 

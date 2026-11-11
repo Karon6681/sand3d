@@ -503,15 +503,18 @@ SHADE = "s3d~smooth"
 CREASE = "s3d~crease"
 
 
-def shade_meshes():
+def shade_meshes(objects=None):
     """Enforce program shading after a verb, including rebuilt meshes: flat under a fixed
     facet count, and by its own angle for a part `smooth` shaded."""
-    own = {ob.data.as_pointer(): ob[SHADE] for ob in bpy.data.objects if ob.type == "MESH" and SHADE in ob}
+    all_meshes = objects is None
+    objects = list(bpy.data.objects if all_meshes else objects)
+    own = {ob.data.as_pointer(): ob[SHADE] for ob in objects if ob.type == "MESH" and SHADE in ob}
     flat = FACETS is not None and not FACET_SMOOTH
     if not own and not flat:
         return
-    kept = {ob.data.as_pointer() for ob in bpy.data.objects if ob.type == "MESH" and ob.get("s3d~merged.shading")}
-    for mesh in bpy.data.meshes:
+    kept = {ob.data.as_pointer() for ob in objects if ob.type == "MESH" and ob.get("s3d~merged.shading")}
+    meshes = bpy.data.meshes if all_meshes else dict.fromkeys(ob.data for ob in objects if ob.type == "MESH")
+    for mesh in meshes:
         if mesh.as_pointer() in kept:
             continue
         angle = own.get(mesh.as_pointer())
