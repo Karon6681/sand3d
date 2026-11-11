@@ -282,7 +282,7 @@ def frames_on_boxes():
 
 @case("describe")
 def described():
-    """A drilled, filleted box with a hinged lid, in a group, as a model reads it."""
+    """A drilled box with a hinged lid, described."""
     box = s3d.box("box", 100, 60, 30)
     s3d.hole(box, 8, on=box.face("top"), depth=12)
     s3d.fillet(box, 1, edges="bottom")

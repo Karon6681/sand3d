@@ -360,43 +360,24 @@ def _sides(which, what):
     return [("xyz".index(t[-1].lower()), -1 if t[0] in "-<" else 1) for t in terms]
 
 
-def _mesh_points(o, m):
-    """`o`'s own mesh points placed by `m`, moved in double precision."""
-    if o.type != "MESH":
-        return []
-    rows = [[m[r][c] for c in range(4)] for r in range(3)]
-    co = [0.0] * (3 * len(o.data.vertices))
-    o.data.vertices.foreach_get("co", co)
-    return [tuple(r[0] * co[i] + r[1] * co[i + 1] + r[2] * co[i + 2] + r[3] for r in rows)
-            for i in range(0, len(co), 3)]
-
-
-def _placed_points(ob):
-    """Every mesh point under `ob` (itself included), in the space `ob` is in: the
+def _placed_points(ob, m=None):
+    """Every mesh point under `ob` (itself included), in the space `ob` is in (or `m`'s): the
     placements composed and snapped as `_core.world` does, the points moved in double
     precision."""
     out = []
 
     def walk(o, m):
-        out.extend(_mesh_points(o, m))
+        if o.type == "MESH":
+            rows = [[m[r][c] for c in range(4)] for r in range(3)]
+            co = [0.0] * (3 * len(o.data.vertices))
+            o.data.vertices.foreach_get("co", co)
+            for i in range(0, len(co), 3):
+                x, y, z = co[i], co[i + 1], co[i + 2]
+                out.append(tuple(r[0] * x + r[1] * y + r[2] * z + r[3] for r in rows))
         for c in o.children:
-            walk(c, _child(m, c))
-    walk(ob, _core.snapped(Matrix(ob.matrix_basis)))
+            walk(c, _core.snapped(m @ c.matrix_parent_inverse @ c.matrix_basis))
+    walk(ob, _core.snapped(Matrix(ob.matrix_basis)) if m is None else m)
     return out
-
-
-def _child(m, c):
-    """Where `c`'s own space lies, given `m` for its parent's."""
-    return _core.snapped(m @ c.matrix_parent_inverse @ c.matrix_basis)
-
-
-def _root(ob, verb):
-    """The object a part, a group or an assembly stands for."""
-    from .assembly import Handle
-    root = ob.root if isinstance(ob, Handle) else ob
-    if not isinstance(root, bpy.types.Object):
-        raise TypeError(f"{verb}: a part, a group or an assembly is expected, not {type(ob).__name__}")
-    return root
 
 
 def bbox(ob, which):
@@ -407,7 +388,10 @@ def bbox(ob, which):
     centre of the side looking +X, `"+X-Y"` the middle of the edge it shares with the
     side looking -Y, `"+X-Y+Z"` a corner. The frame has the axes of a face looking the
     first way named — its normal that way — and is read on `ob`, as `ob.face` is."""
-    root = _root(ob, "bbox")
+    from .assembly import Handle
+    root = ob.root if isinstance(ob, Handle) else ob
+    if not isinstance(root, bpy.types.Object):
+        raise TypeError(f"bbox: a part, a group or an assembly is expected, not {type(ob).__name__}")
     sides = _sides(which, "bbox")
     pts = _placed_points(root)
     if not pts:
@@ -425,87 +409,49 @@ def bbox(ob, which):
 def describe(ob):
     """What it holds: size, volume, face and edge names, joints, material, parts.
 
-    A dict for an agent or a check to read between verbs, not for a program to branch
-    on: the box `ob` and everything under it span at the current pose, in the space `ob`
-    is in (None if it holds no solid); for a solid, how many edges bound one face only
-    and how many bound more than two, and its volume when both are 0 (None otherwise);
-    every face name it carries, with the faces' area and whether `face` gives it a frame
-    (a flat face does), and every edge name, with the edges' length — a name qualified by
-    its part (`plate.top`) only where it holds other faces or edges than the plain one;
-    the joints it hangs by, with their axis, range and value now; the material it wears;
-    an assembly's anchors; and the same for each part under it, its box in the space of
-    `ob`'s. Lengths are in the program's unit, to a millionth of a millimetre."""
-    root = _root(ob, "describe")
-    out = _describe(root, _core.snapped(Matrix(root.matrix_basis)))
-    out["anchors"] = sorted(k for k in vars(ob) if k != "root") if root is not ob else []
-    return out
+    A dict for an agent or a check: box at the current pose, volume (None if not closed),
+    face areas and edge names, joints, material, and the same for each part."""
+    from .assembly import Handle
+    root = ob.root if isinstance(ob, Handle) else ob
+    if not isinstance(root, bpy.types.Object):
+        raise TypeError(f"describe: a part, a group or an assembly is expected, not {type(ob).__name__}")
+    return _describe(root, _core.snapped(Matrix(root.matrix_basis)))
 
 
 def _describe(ob, m):
-    """`describe` of `ob`, its own space placed by `m` in the space of the part described."""
     from . import joints, materials
-    parts = [_describe(c, _child(m, c)) for c in sorted(ob.children, key=_core.given_name)]
-    pts = _mesh_points(ob, m)
-    boxes = [p["bbox"] for p in parts if p["bbox"]]
+    out = {"name": _core.given_name(ob), "bbox": None, "size": None, "open_edges": None, "volume": None,
+           "faces": {}, "edges": []}
+    pts = _placed_points(ob, m)
     if pts:
-        boxes.append([[_mm(min(p[k] for p in pts)) for k in range(3)], [_mm(max(p[k] for p in pts)) for k in range(3)]])
-    lo = [min(b[0][k] for b in boxes) for k in range(3)] if boxes else None
-    hi = [max(b[1][k] for b in boxes) for k in range(3)] if boxes else None
-    out = {"name": _core.given_name(ob), "bbox": [lo, hi] if boxes else None,
-           "size": [_mm(b - a) for a, b in zip(lo, hi)] if boxes else None,
-           "volume": None, "open_edges": None, "nonmanifold_edges": None, "faces": {}, "edges": {}}
+        lo = [min(p[k] for p in pts) for k in range(3)]
+        hi = [max(p[k] for p in pts) for k in range(3)]
+        out["bbox"], out["size"] = [lo, hi], [b - a for a, b in zip(lo, hi)]
     if ob.type == "MESH":
-        me = ob.data
         bm = bmesh.new()
-        bm.from_mesh(me)
-        out["open_edges"] = sum(len(e.link_faces) < 2 for e in bm.edges)
-        out["nonmanifold_edges"] = sum(len(e.link_faces) > 2 for e in bm.edges)
-        if out["open_edges"] == out["nonmanifold_edges"] == 0:
-            out["volume"] = _mm(bm.calc_volume(signed=True), 3)     # in its own space: placement moves none
+        bm.from_mesh(ob.data)
+        out["open_edges"] = sum(len(e.link_faces) != 2 for e in bm.edges)
+        out["volume"] = None if out["open_edges"] else bm.calc_volume()
         bm.free()
-        areas = [p.area for p in me.polygons]
-        lengths = [(me.vertices[a].co - me.vertices[b].co).length for a, b in (e.vertices for e in me.edges)]
-        out["faces"] = {n: {"area": _mm(sum(a for a, v in zip(areas, h) if v), 2), "frame": _gives_frame(ob, n)}
-                        for n, h in _held(me, _core.FACE_TAG, "FACE").items()}
-        out["edges"] = {n: {"length": _mm(sum(l for l, v in zip(lengths, h) if v))}
-                        for n, h in _held(me, _core.EDGE_TAG, "EDGE").items()}
+        areas = [p.area for p in ob.data.polygons]
+        for a in ob.data.attributes:
+            held = [v.value for v in a.data] if a.name.startswith((_core.FACE_TAG, _core.EDGE_TAG)) else []
+            if not any(held):
+                continue
+            name = a.name.split(":", 1)[1]
+            if a.domain == "FACE":
+                out["faces"][name] = sum(x for x, v in zip(areas, held) if v)
+            else:
+                out["edges"].append(name)
+        out["edges"].sort()
     parent = joints.parent_of(ob)
     out["joints"] = [{"name": j["name"], "kind": j["kind"], "on": parent and _core.given_name(parent),
-                      "axis": j["axis"], "range": j["range"] and list(j["range"]), "value": j["value"]}
-                     for j in joints.joints_of(ob)]
+                      "axis": j["axis"], "range": j["range"], "value": j["value"]} for j in joints.joints_of(ob)]
     tag = materials._nearest(ob)
     out["material"] = materials._name(tag) if tag else None
-    out["anchors"] = []
-    out["parts"] = parts
+    out["parts"] = [_describe(c, _core.snapped(m @ c.matrix_parent_inverse @ c.matrix_basis))
+                    for c in sorted(ob.children, key=_core.given_name)]
     return out
-
-
-def _mm(x, power=1):
-    """`x`, a length (an area, `power` 2; a volume, 3) in the program's unit, to a
-    millionth of a millimetre: float noise off what a model reads."""
-    s = _core.in_mm(1.0) ** power
-    return round(x * s, 6) / s + 0.0
-
-
-def _held(me, prefix, domain):
-    """{name: which elements hold it}, by name, for the names under `prefix` some element
-    holds — a name qualified by its part only where it holds other elements than the plain one."""
-    held = {}
-    for a in sorted(me.attributes, key=lambda a: a.name):
-        if a.name.startswith(prefix) and a.domain == domain:
-            h = [False] * len(a.data)
-            a.data.foreach_get("value", h)
-            if any(h):
-                held[a.name[len(prefix):]] = h
-    return {n: h for n, h in held.items() if "." not in n or held.get(n.rpartition(".")[2]) != h}
-
-
-def _gives_frame(ob, name):
-    try:
-        face(ob, name)
-        return True
-    except ValueError:
-        return False
 
 
 def local(ob, x=0, y=0, z=0, rx=0, ry=0, rz=0):

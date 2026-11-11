@@ -17,7 +17,7 @@ so a new verb cannot slip past the invariance test unclassified.
 
 Lengths read back: `Frame.point`, `Frame.origin`, `Frame.matrix` and a placed profile's `matrix` (their
 translation), `Path.points`, a loop's `pts`, `Profile.bounds` and `Profile.mesh` (its
-points), `describe`'s sizes, areas and volume. `+` and `-` on profiles run as library calls. Library objects — solids, profiles, placed profiles,
+points), `describe`'s. `+` and `-` on profiles run as library calls. Library objects — solids, profiles, placed profiles,
 paths, frames — stay in the library's unit; only their reads are converted. A
 call's own work runs with the shim off, so the library's internal use of `Frame`,
 `Path.points` or `bounds` is untouched.
@@ -189,19 +189,12 @@ FIXES = {"joint": _joint, "pose": _pose}
 
 
 def _described(d, k):
-    """`describe`'s dict with its lengths × k, its areas × k², its volume × k³; a
-    prismatic joint's range and value are lengths."""
-    def joint(j):
-        return {**j, "range": scaled(j["range"], k), "value": j["value"] * k} if j["kind"] == "prismatic" else j
-    return {**d, "bbox": scaled(d["bbox"], k), "size": scaled(d["size"], k),
-            "volume": None if d["volume"] is None else d["volume"] * k ** 3,
-            "faces": {n: {**f, "area": f["area"] * k * k} for n, f in d["faces"].items()},
-            "edges": {n: {"length": e["length"] * k} for n, e in d["edges"].items()},
-            "joints": [joint(j) for j in d["joints"]], "parts": [_described(p, k) for p in d["parts"]]}
-
-
-#: Verbs whose reads hold lengths.
-READS = {"describe": _described}
+    """`describe`'s dict × k: lengths, areas, volume, a prismatic joint's range and value."""
+    joints = [{**j, "range": scaled(j["range"], k), "value": j["value"] * k} if j["kind"] == "prismatic" else j
+              for j in d["joints"]]
+    return {**d, "bbox": scaled(d["bbox"], k), "size": scaled(d["size"], k), "volume": scaled(d["volume"], k ** 3),
+            "faces": {n: a * k * k for n, a in d["faces"].items()}, "joints": joints,
+            "parts": [_described(p, k) for p in d["parts"]]}
 
 
 def _wrap(fn, spec, k, out=None, fix=None):
@@ -241,9 +234,8 @@ def install(k):
     for name in sand3d.__all__:
         obj = getattr(sand3d, name)
         if name in LENGTHS and inspect.isfunction(obj):
-            read = READS.get(name)
-            setattr(sand3d, name, _wrap(obj, LENGTHS[name], k, fix=FIXES.get(name),
-                                        out=read and (lambda v, read=read: read(v, 1 / k))))
+            out = (lambda d: _described(d, 1 / k)) if name == "describe" else None
+            setattr(sand3d, name, _wrap(obj, LENGTHS[name], k, out=out, fix=FIXES.get(name)))
     Frame.__init__ = _wrap(Frame.__init__, LENGTHS["Frame"], k)
     for method in ("offset", "turn", "move"):
         setattr(Frame, method, _wrap(getattr(Frame, method), LENGTHS[f"Frame.{method}"], k))
