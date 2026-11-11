@@ -306,8 +306,19 @@ def field(name, size, density, *, cell, level=0, min_component_cells=3):
                 jj, ii = np.nonzero(mask)
             bases.append(z * plane + jj.ravel() * nx + ii.ravel())
         ids = np.concatenate(bases)[:, None] + offsets
-        unique, inverse = np.unique(ids, return_inverse=True)
-        shared = np.isin(unique, prev_ids, assume_unique=True)
+        if active is None:
+            # Dense slabs contain every grid point; indexing needs no sort.
+            unique = np.arange(k * plane, (end + 1) * plane)
+            inverse = (ids - k * plane).ravel()
+        else:
+            unique, inverse = np.unique(ids, return_inverse=True)
+        # Both arrays are sorted, and only the previous slab's top is shared.
+        shared = unique < k * plane + plane if k else np.zeros(len(unique), dtype=bool)
+        if active is not None:
+            where = np.searchsorted(prev_ids, unique)
+            shared = np.zeros(len(unique), dtype=bool)
+            valid = where < len(prev_ids)
+            shared[valid] = prev_ids[where[valid]] == unique[valid]
         vals = np.empty(len(unique))
         vals[shared] = prev_vals[np.searchsorted(prev_ids, unique[shared])]
         samples += np.count_nonzero(~shared)
@@ -367,7 +378,9 @@ def field(name, size, density, *, cell, level=0, min_component_cells=3):
     for start in range(0, len(edges), 65536):
         e = edges[start : start + 65536]
         p, q = points(e[:, 0]), points(e[:, 1])
-        va, vb = sample(e[:, 0]), sample(e[:, 1])
+        endpoints, endpoint_inverse = np.unique(e, return_inverse=True)
+        endpoint_values = sample(endpoints)[endpoint_inverse].reshape(e.shape)
+        va, vb = endpoint_values[:, 0], endpoint_values[:, 1]
         scale = np.maximum(np.abs(va), np.abs(vb))
         scale[scale == 0] = 1
         fl, fr = va / scale, vb / scale
@@ -421,7 +434,7 @@ def field(name, size, density, *, cell, level=0, min_component_cells=3):
     # Vectorized oriented incidence, including exact-level singularities.
     ee = np.concatenate((faces[:, [0, 1]], faces[:, [1, 2]], faces[:, [2, 0]]))
     ordered = np.sort(ee, axis=1)
-    _, inverse, counts = np.unique(
+    edge_keys, inverse, counts = np.unique(
         ordered[:, 0] * len(verts) + ordered[:, 1],
         return_inverse=True,
         return_counts=True,
@@ -455,14 +468,25 @@ def field(name, size, density, *, cell, level=0, min_component_cells=3):
                     "field: singular vertex at level; change level or cell"
                 )
     if min_component_cells:
+        # Reduce the fixed, unique adjacency in sorted groups, rather than
+        # scattering every duplicate triangle edge on each iteration.
+        u, v = edge_keys // len(verts), edge_keys % len(verts)
+        sources = np.concatenate((u, v))
+        neighbours = np.concatenate((v, u))
+        order = np.argsort(sources, kind="stable")
+        sources, neighbours = sources[order], neighbours[order]
+        starts = np.r_[0, np.flatnonzero(np.diff(sources)) + 1]
+        vertices = sources[starts]
         labels = np.arange(len(verts))
         while True:
             old = labels.copy()
-            np.minimum.at(labels, ee[:, 0], labels[ee[:, 1]])
-            np.minimum.at(labels, ee[:, 1], labels[ee[:, 0]])
+            labels[vertices] = np.minimum(
+                labels[vertices], np.minimum.reduceat(labels[neighbours], starts)
+            )
             labels = labels[labels]
             if np.array_equal(labels, old):
                 break
+        del sources, neighbours, order, starts, vertices, u, v
         roots, comp = np.unique(labels, return_inverse=True)
         low = np.full((len(roots), 3), np.inf)
         high = -low.copy()
