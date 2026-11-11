@@ -305,13 +305,27 @@ Closed paths retain a seam in s. Named noise with path coordinates is refused.
 Colour functions declare exactly 3, 4 or 5 positional parameters, no variadics or
 keyword-only arguments: `color(x,y,z[,n[,u]])`, returning sRGB `"#rrggbb"` or an RGB
 triple in [0,1]. They read local face centres in program units and outward unit
-normal tuples, once per face in index order. `u` is the face mean of vertex
+normal tuples, once per face in index order after the array probe below. `u` is the face mean of vertex
 s / extent: section progression for loft, arc-length progression for wire/sweep,
 height from bottom to top for revolve/dome/sphere/cone/cylinder; caps take their
 end value. Loft's normalization extent varies with section progression so s stays
 an arc length even between uneven stations. Functions are pure, session-local,
 not serialized in Blender files; copy keeps the function, join/merge the first one's.
 A five-argument colour refuses missing or undefined coordinates.
+
+Array colour functions receive float64 `x`, `y`, `z`, and `u` arrays of shape `(k,)`
+for all faces of a part, and `n` of shape `(3, k)` (`n[2]` is always the z normal).
+Return a numeric sRGB array of shape `(k, 3)`, finite and in [0,1]. Only this
+orientation is accepted: rows are faces, even when k=3. Hex string arrays and
+channel-first `(3, k)` arrays are not accepted; convert hex to RGB in the function.
+For example, `lambda x,y,z: np.stack((x*0+.2, y*0+.4, z*0+.6), axis=-1)`.
+A probe with up to eight faces selects array evaluation. If it raises or returns
+the wrong shape, evaluation falls back to scalar calls; otherwise the function
+is called once with all faces. Invalid array values raise an error. The probe is
+one extra call on every evaluation, including scalar fallback: functions must
+have no side effects or random state. A function supporting both forms must give
+the same colours in both, using float64 arithmetic. Each export evaluates anew;
+its face corners and area mean reuse those colours.
 
 Placement, copy, merge, displace, bend, twist, taper, scale, lay and interpolating
 mesh edits retain construction labels; refinement interpolates them. Join between

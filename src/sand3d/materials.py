@@ -83,13 +83,20 @@ def material(ob, kind, color=None, roughness=None, metallic=None, opacity=None, 
     given. On a group or an assembly, every part under it that names none of its own: the
     nearest call wins, in whatever order the calls come. Returns `ob`.
 
-    color may be a deterministic callable. inspect.signature must declare exactly
-    three or four or five positional parameters, no variadics or keyword-only parameters:
-    color(x, y, z[, n[, u]]), at each face centre in local space, in program units;
-    n is its outward unit normal tuple; u is its maker's lengthwise 0..1. Readers evaluate once per face in index
-    order, without caching. Functions live in a Python registry referenced by the
-    object tag; copy keeps the reference, join and merge keep the first object's.
-    Functions are session-local and are not serialised into Blender files."""
+    color may be a deterministic callable declaring exactly three, four or five
+    positional parameters, no variadics or keyword-only parameters:
+    color(x, y, z[, n[, u]]), at local face centres in program units. Scalar calls
+    receive an outward unit normal tuple and lengthwise u, returning sRGB hex or
+    an RGB tuple/list in [0, 1]. Array calls receive float64 x/y/z/u of shape (k,)
+    and n of shape (3, k), returning a numeric RGB array of shape (k, 3) in [0, 1].
+    A probe on up to eight faces selects array evaluation; an exception or wrong
+    shape falls back to scalar calls in face index order. Array evaluation then
+    calls once for all faces of the part. The probe is an extra call: functions
+    must be pure, without side effects or random state, and agree in both forms.
+    Each export evaluates anew; corner and mean readers share the result within
+    that export. Functions are session-local, not serialised in Blender files;
+    copy keeps the reference, join and merge keep the first object's.
+    """
     from .assembly import Handle
     from .edit import _flat
     if kind not in PRESETS:
@@ -251,6 +258,42 @@ def face_colors(ob):
     if count == 5 and (parameter is None or any(not math.isfinite(u) for u in parameter)):
         raise ValueError(f"material: {_core.given_name(ob)!r} has no lengthwise u; "
                          "use loft, wire, sweep, revolve, dome, sphere, cone or cylinder")
+    # Blender stores these coordinates as floats; widen before calling the function,
+    # exactly as tuple(face.center) does in the scalar path.
+    centres = np.empty((len(mesh.polygons), 3), dtype=np.float64)
+    mesh.polygons.foreach_get('center', centres.ravel())
+    args = tuple(centres.T)
+    if count >= 4:
+        normals = np.empty_like(centres)
+        mesh.polygons.foreach_get('normal', normals.ravel())
+        args += (normals.T,)
+    if count == 5:
+        args += (np.asarray(parameter, dtype=np.float64),)
+    size = min(8, len(centres))
+    vectorized = False
+    try:
+        probe = np.asarray(fn(*(a[..., :size] for a in args)))
+        vectorized = probe.shape == (size, 3)
+    except Exception:
+        # Scalar functions may reject arrays in arbitrary user code.
+        pass
+    if vectorized:
+        try:
+            values = np.asarray(fn(*args))
+            if values.shape != (len(centres), 3):
+                raise ValueError(f"expected RGB array shape ({len(centres)}, 3), got {values.shape}")
+            if values.dtype.kind not in 'fiu':
+                raise ValueError("expected a numeric RGB array")
+            values = values.astype(np.float64)
+            if not np.all(np.isfinite(values) & (values >= 0) & (values <= 1)):
+                raise ValueError("RGB array values must be finite and in [0, 1]")
+        except Exception as exc:
+            raise ValueError(f"material: invalid colour array: {exc}") from exc
+        # Python's float pow keeps the scalar conversion bit-identical in float64.
+        linear = np.fromiter((c/12.92 if c <= .04045 else ((c+.055)/1.055)**2.4
+                              for c in map(float, values.ravel())), np.float64,
+                             values.size).reshape(-1, 3)
+        return [(*rgb, 1.) for rgb in linear.tolist()]
     result = []
     for face in mesh.polygons:
         centre = tuple(face.center)
@@ -268,7 +311,8 @@ def face_colors(ob):
                 rgba = (*(c/12.92 if c <= .04045 else ((c+.055)/1.055)**2.4 for c in value), 1.)
             result.append(rgba)
         except (ValueError, TypeError, OverflowError) as exc:
-            raise ValueError(f"material: invalid colour at face centre {centre}") from exc
+            raise ValueError(f"material: invalid colour at face centre {centre}; "
+                             "expected scalar hex/RGB in [0, 1] or numeric RGB array shape (k, 3)") from exc
     return result
 
 

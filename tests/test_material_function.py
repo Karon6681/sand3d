@@ -1,5 +1,6 @@
 """Local rest-space face colour functions."""
 import unittest
+import numpy as np
 import sand3d as s3d
 from sand3d import materials
 
@@ -27,8 +28,8 @@ class MaterialFunction(unittest.TestCase):
         s3d.twist(a, 30, axis='+Z')
         self.assertEqual(calls, [])
         colors = materials.face_colors(a)
-        self.assertEqual(len(calls), len(a.data.polygons))
-        self.assertEqual(len(colors), len(calls))
+        self.assertEqual(len(calls), len(a.data.polygons) + 1)
+        self.assertEqual(len(colors), len(calls) - 1)
 
     def test_export_evaluates_once(self):
         from unittest.mock import patch
@@ -61,6 +62,47 @@ class MaterialFunction(unittest.TestCase):
         import math
         for actual, expected in zip(face_u(mesh), reference()):
             self.assertTrue(math.isnan(actual) if math.isnan(expected) else actual == expected)
+
+    def test_array_colours_equal_scalar(self):
+        a = s3d.cone('a', 20, 50)
+        calls = []
+        def color(x,y,z,n,u):
+            calls.append((np.shape(x), np.shape(n), np.shape(u)))
+            return np.stack((x*0+.2, n[2]*.1+.5, u*.3), axis=-1)
+        s3d.material(a, 'plastic', color=color)
+        vector = materials.face_colors(a)
+        self.assertEqual(calls, [((8,), (3,8), (8,)),
+                                 ((len(vector),), (3,len(vector)), (len(vector),))])
+        def scalar(x,y,z,n,u):
+            if not np.isscalar(x):
+                raise TypeError('scalar only')
+            return color(x,y,z,n,u).tolist()
+        s3d.material(a, 'plastic', color=scalar)
+        self.assertEqual(vector, materials.face_colors(a))
+
+    def test_array_errors_and_scalar_fallback(self):
+        a = s3d.box('a', 10, 10, 10)
+        def fallback(x,y,z):
+            if not np.isscalar(x):
+                return np.zeros((len(x), 4))
+            return (.2,.4,.6)
+        s3d.material(a, 'plastic', color=fallback)
+        self.assertEqual(materials.face_colors(a)[0], materials._linear((.2,.4,.6)))
+        for fn, message in [
+                (lambda x,y,z: np.zeros((3,len(np.atleast_1d(x)))), 'shape'),
+                (lambda x,y,z: np.full((len(x),3), 1.1), r'finite.*\[0, 1\]'),
+                (lambda x,y,z: np.full((len(x),3), np.nan), 'finite'),
+                (lambda x,y,z: np.full((len(x),3), True), 'numeric')]:
+            s3d.material(a, 'plastic', color=fn)
+            with self.assertRaisesRegex(ValueError, message):
+                materials.face_colors(a)
+        def changed(x,y,z):
+            return np.zeros((len(x), 3 if len(x) == 8 else 4))
+        # Six box faces would make the probe and full call the same size.
+        b = s3d.cone('b', 20, 50)
+        s3d.material(b, 'plastic', color=changed)
+        with self.assertRaisesRegex(ValueError, 'expected RGB array shape'):
+            materials.face_colors(b)
 
     def test_examples(self):
         a = s3d.loft('limb', *(s3d.station(z, 20, 20) for z in (0, 80, 160, 240)))
@@ -114,10 +156,13 @@ class MaterialFunction(unittest.TestCase):
         import sys
         code = """import sand3d as s
 from sand3d import materials
+import numpy as np
 s.empty_scene(); s.facets(6)
 a=s.wire('a',s.spline([(0,-798,1197),(0,-1302,1386),(0,-1218,1722),(0,-1092,2016)]),[(0,504),(.5,273),(1,336)],rings=1)
 s.material(a,'plastic',color=lambda x,y,z,n,u: '#ff0000' if int(u*6)%2 else '#0000ff')
 b=s.dome('cap',1200,450); s.displace(b,40,300,seed=3,refine=False)
+s.material(b,'plastic',color=lambda x,y,z,n,u: np.stack((x*0+.2,n[2]*.1+.5,u*.3),axis=-1))
+print(materials.face_colors(b))
 print(([tuple(v.co) for v in a.data.vertices], [tuple(f.vertices) for f in a.data.polygons], __import__('sand3d._coordinates',fromlist=['face_u']).face_u(a.data), materials.face_colors(a), [tuple(v.co) for v in b.data.vertices]))
 """
         a = subprocess.run([sys.executable, '-c', code], check=True, capture_output=True).stdout
@@ -155,7 +200,7 @@ print(([tuple(v.co) for v in a.data.vertices], [tuple(f.vertices) for f in a.dat
             return '#336699'
         s3d.material(a, 'plastic', color=color)
         colors = materials.face_colors(a)
-        self.assertAlmostEqual(max(seen), .16)
+        self.assertAlmostEqual(max(z for z in seen if np.isscalar(z)), .16)
         self.assertEqual(colors[0], materials._linear('#336699'))
 
 
