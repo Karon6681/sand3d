@@ -3,6 +3,7 @@
 Nothing here is public. No function reads `bpy.context.active_object` or the
 selection; the scene collection is the only context a verb touches.
 """
+from functools import lru_cache
 import hashlib
 import math
 
@@ -187,6 +188,7 @@ FACE_TAG, EDGE_TAG = "s3d_face:", "s3d_edge:"
 NAME_MAX = 67
 
 
+@lru_cache(maxsize=8192)
 def _size(s):
     return len(s.encode())
 
@@ -197,6 +199,7 @@ def _fit(s, n):
     return s if len(b) <= n else b[:max(n - 9, 0)].decode(errors="ignore") + "~" + hashlib.sha1(b).hexdigest()[:8]
 
 
+@lru_cache(maxsize=8192)
 def tag_key(prefix, tag):
     """The attribute name that holds `tag`: `prefix + tag`, or, past NAME_MAX bytes, the
     part before the last dot shortened with a digest, so long names stay apart and the
@@ -208,6 +211,7 @@ def tag_key(prefix, tag):
     return prefix + _fit(name, NAME_MAX - _size(prefix + dot + cap)) + dot + cap
 
 
+@lru_cache(maxsize=8192)
 def stored(prefix, tag):
     """`tag` as the attribute holding it spells it, without the prefix."""
     return tag_key(prefix, tag)[len(prefix):]
