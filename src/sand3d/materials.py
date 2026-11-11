@@ -21,6 +21,7 @@ import math
 from contextlib import contextmanager
 
 import bpy
+import numpy as np
 
 from . import _core
 
@@ -212,8 +213,11 @@ def resolve():
         if have != [want]:
             ob.data.materials.clear()
             ob.data.materials.append(want)
-        if any(p.material_index for p in ob.data.polygons):
-            ob.data.polygons.foreach_set("material_index", [0] * len(ob.data.polygons))
+        if ob.data.attributes.get("material_index") is not None:
+            indices = np.empty(len(ob.data.polygons), dtype=np.int32)
+            ob.data.polygons.foreach_get("material_index", indices)
+            if indices.any():
+                ob.data.polygons.foreach_set("material_index", np.zeros(len(indices), dtype=np.int32))
 
 
 def dressed():
