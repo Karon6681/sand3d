@@ -214,10 +214,12 @@ def resolve(objects=None):
         have = list(ob.data.materials)
         if tag is None:
             if any(m is not None and TAG in m for m in have):
+                _core.own_mesh(ob)
                 ob.data.materials.clear()
             continue
         want = _material(tag, made)
         if have != [want]:
+            _core.own_mesh(ob)
             ob.data.materials.clear()
             ob.data.materials.append(want)
         if ob.data.attributes.get("material_index") is not None:

@@ -1269,10 +1269,10 @@ def _copy(ob, children=None, seen=None):
 
 
 def _twin(ob):
-    """A new object like `ob` — placement, custom properties, its own copy of the mesh —
+    """A new object like `ob` — placement, custom properties, a shared mesh until edited —
     in the scene, under the same parent."""
-    twin = ob.copy()                   # Blender shares the mesh: copy it
-    if ob.data is not None:
+    twin = ob.copy()
+    if ob.data is not None and ob.type != "MESH":
         twin.data = ob.data.copy()
     twin[_core.NAME] = _core.given_name(ob)   # a group has none; the copy's own name is suffixed
     return _core.link(twin)
@@ -1435,6 +1435,7 @@ def scale(ob, s):
         return ob
     _solids("scale", ob)
     sx, sy, sz = (s, s, s) if isinstance(s, (int, float)) else s
+    _core.own_mesh(ob)
     ob.data.transform(Matrix.Diagonal((sx, sy, sz, 1)))
     if sx * sy * sz < 0:
         ob.data.flip_normals()
@@ -1582,6 +1583,7 @@ def dent(ob, points, r, depth, *, coords="local"):
     for index, push in moves.items():
         v = bm.verts[index]
         v.co -= v.normal * push
+    _core.own_mesh(ob)
     bm.to_mesh(ob.data)
     bm.free()
     return ob
@@ -2249,6 +2251,7 @@ def _deform(ob, value, axis, verb, toward=None):
                     v.co = a * u + p * (1 + (value - 1) * t)
         bm.transform(inverse)
         bm.normal_update()
+        _core.own_mesh(part)
         bm.to_mesh(part.data)
         bm.free()
         part.data.update()
@@ -2385,6 +2388,7 @@ def lay(ob, over, refine=0, reach=None):
                     bmesh.ops.triangulate(bm, faces=list(bm.faces), quad_method='FIXED', ngon_method='EAR_CLIP')
                 bm.transform(matrix.inverted())
                 bm.normal_update()
+                _core.own_mesh(part)
                 bm.to_mesh(part.data)
                 part.data.update()
             finally:
@@ -2432,6 +2436,7 @@ def lay(ob, over, refine=0, reach=None):
             positions.append(back @ (spot + up * height))
         seated.append((part, positions))
     for part, positions in seated:
+        _core.own_mesh(part)
         for v, co in zip(part.data.vertices, positions):
             v.co = co
         part.data.update()

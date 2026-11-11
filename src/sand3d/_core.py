@@ -547,3 +547,10 @@ def turn_steps(paths):
                     for a, b in zip(directions, directions[1:]))
         turn = max(turn, angle)
     return max(1, math.ceil(FACETS * turn / (2 * math.pi) - 1e-4))
+
+
+def own_mesh(ob):
+    """Detach shared data before a verb writes to this part alone."""
+    if ob.data.users > 1:
+        ob.data = ob.data.copy()
+    return ob.data
