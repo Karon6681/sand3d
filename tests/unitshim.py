@@ -189,13 +189,15 @@ FIXES = {"joint": _joint, "pose": _pose}
 
 
 def _described(d, k):
-    """`describe`'s dict with its lengths × k, its areas × k², its volume × k³."""
-    d = {**d, "bbox": scaled(d["bbox"], k), "size": scaled(d["size"], k),
-         "parts": [_described(p, k) for p in d["parts"]]}
-    if "volume" in d:
-        d["volume"] *= k ** 3
-        d["faces"] = {n: {**f, "area": f["area"] * k * k} for n, f in d["faces"].items()}
-    return d
+    """`describe`'s dict with its lengths × k, its areas × k², its volume × k³; a
+    prismatic joint's range and value are lengths."""
+    def joint(j):
+        return {**j, "range": scaled(j["range"], k), "value": j["value"] * k} if j["kind"] == "prismatic" else j
+    return {**d, "bbox": scaled(d["bbox"], k), "size": scaled(d["size"], k),
+            "volume": None if d["volume"] is None else d["volume"] * k ** 3,
+            "faces": {n: {**f, "area": f["area"] * k * k} for n, f in d["faces"].items()},
+            "edges": {n: {"length": e["length"] * k} for n, e in d["edges"].items()},
+            "joints": [joint(j) for j in d["joints"]], "parts": [_described(p, k) for p in d["parts"]]}
 
 
 #: Verbs whose reads hold lengths.
