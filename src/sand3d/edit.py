@@ -1377,6 +1377,11 @@ def merge(*obs):
 def _mesh_array(elements, prop, width=1, dtype=np.int32):
     values = np.empty(len(elements) * width, dtype=dtype)
     elements.foreach_get(prop, values)
+    if dtype == np.float32:
+        # Reading RNA scalars through Python quiets signaling NaNs. Match that
+        # conversion while preserving their payload, sign, and all finite bits.
+        bits = values.view(np.uint32)
+        bits[np.isnan(values)] |= np.uint32(0x00400000)
     return values.reshape(-1, width) if width != 1 else values
 
 

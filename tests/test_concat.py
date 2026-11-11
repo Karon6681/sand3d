@@ -140,3 +140,25 @@ class Concat(unittest.TestCase):
         finally:
             for mesh in [expected, result, *(me for me, _ in inputs)]:
                 bpy.data.meshes.remove(mesh)
+
+    def test_signaling_nan_attributes_follow_scalar_conversion(self):
+        me = bpy.data.meshes.new('source')
+        me.from_pydata([(0, 0, 0), (1, 0, 0), (0, 1, 0)], [], [(0, 1, 2)])
+        inputs = np.array([0x7f801234, 0xff805678, 0x80000000], dtype=np.uint32).view(np.float32)
+        for name, kind, domain in [('point', 'FLOAT', 'POINT'), ('face', 'FLOAT', 'FACE'), ('vector', 'FLOAT_VECTOR', 'FACE')]:
+            a = me.attributes.new(name, kind, domain)
+            a.data.foreach_set('vector' if kind == 'FLOAT_VECTOR' else 'value', inputs[:1] if name == 'face' else inputs)
+        bm = edit._concat([(me, Matrix.Identity(4))])
+        result = bpy.data.meshes.new('result')
+        try:
+            bm.to_mesh(result)
+            for name, prop, width in [('point', 'value', 1), ('face', 'value', 1), ('vector', 'vector', 3)]:
+                source = me.attributes[name]
+                reference = np.array([c for d in source.data for c in d.vector] if width == 3 else [d.value for d in source.data], dtype=np.float32)
+                actual = np.empty(len(source.data) * width, dtype=np.float32)
+                result.attributes[name].data.foreach_get(prop, actual)
+                self.assertEqual(actual.tobytes(), reference.tobytes())
+        finally:
+            bm.free()
+            bpy.data.meshes.remove(result)
+            bpy.data.meshes.remove(me)
