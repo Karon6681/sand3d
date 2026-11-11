@@ -64,8 +64,7 @@ def _tool_mesh(tool, rel, strip):
 def _evaluate(base_mesh, tool_meshes, operation, self_intersect=False):
     """Run one EXACT boolean on temporary objects; the evaluated mesh."""
     coll = bpy.data.collections.new("_s3d_tools")
-    bpy.context.scene.collection.children.link(coll)
-    base = _core.link(bpy.data.objects.new("_s3d_base", base_mesh))
+    base = bpy.data.objects.new("_s3d_base", base_mesh)
     tools = []
     for me in tool_meshes:
         t = bpy.data.objects.new("_s3d_tool", me)
@@ -78,11 +77,10 @@ def _evaluate(base_mesh, tool_meshes, operation, self_intersect=False):
         mod.operand_type, mod.object = "OBJECT", tools[0]
     else:
         mod.operand_type, mod.collection = "COLLECTION", coll
-    depsgraph = bpy.context.evaluated_depsgraph_get()
-    result = bpy.data.meshes.new_from_object(base.evaluated_get(depsgraph), preserve_all_data_layers=True,
-                                             depsgraph=depsgraph)
-    bpy.data.batch_remove([*tools, base, coll])
-    bpy.data.batch_remove([me for me in {base_mesh, *tool_meshes} if me.users == 0])
+    try:
+        result = _core.evaluated_mesh(base, collection=coll, preserve_all_data_layers=True)
+    finally:
+        bpy.data.batch_remove([me for me in {base_mesh, *tool_meshes} if me.users == 0])
     return result
 
 
@@ -916,16 +914,15 @@ def _bevel_weighted(ob, bm, picks, segments, kind):
         p.material_index = 0
     me.materials.append(None)
     me.materials.append(None)
-    temp = _core.link(bpy.data.objects.new("_s3d_bevel", me))
+    temp = bpy.data.objects.new("_s3d_bevel", me)
     mod = temp.modifiers.new("bevel", "BEVEL")
     mod.limit_method, mod.edge_weight, mod.affect = "WEIGHT", "s3d~weight", "EDGES"
     mod.width, mod.offset_type, mod.segments, mod.profile = top * size, "OFFSET", segments, 0.5
     mod.use_clamp_overlap, mod.loop_slide, mod.material = True, True, 1
-    depsgraph = bpy.context.evaluated_depsgraph_get()
-    result = bpy.data.meshes.new_from_object(temp.evaluated_get(depsgraph), preserve_all_data_layers=True,
-                                             depsgraph=depsgraph)
-    bpy.data.objects.remove(temp)
-    bpy.data.meshes.remove(me)
+    try:
+        result = _core.evaluated_mesh(temp, preserve_all_data_layers=True)
+    finally:
+        bpy.data.meshes.remove(me)
     out = bmesh.new()
     out.from_mesh(result)
     bpy.data.meshes.remove(result)
@@ -1693,7 +1690,7 @@ def _closing(mesh, r, voxel):
     resolves where the pushed surface crosses itself), pull it back by r, remesh. The pull is
     the exact offset wherever the surface bends less than 1 / r, which the push guarantees.
     Remesh and Displace give the same mesh in every run and under bpy 4.5 and 5.x."""
-    holder = _core.link(bpy.data.objects.new("_s3d_blend", mesh))
+    holder = bpy.data.objects.new("_s3d_blend", mesh)
     try:
         def remesh():
             mod = holder.modifiers.new("remesh", "REMESH")
@@ -1703,10 +1700,8 @@ def _closing(mesh, r, voxel):
             mod = holder.modifiers.new("offset", "DISPLACE")
             mod.direction, mod.mid_level, mod.strength = "NORMAL", 0.0, d
             remesh()
-        depsgraph = bpy.context.evaluated_depsgraph_get()
-        result = bpy.data.meshes.new_from_object(holder.evaluated_get(depsgraph), depsgraph=depsgraph)
+        result = _core.evaluated_mesh(holder)
     finally:
-        bpy.data.objects.remove(holder)
         bpy.data.meshes.remove(mesh)
     bm = bmesh.new()
     bm.from_mesh(result)
@@ -1728,12 +1723,11 @@ def _facet_surface(bm):
         return bm
     mesh = bpy.data.meshes.new('_s3d_facets')
     bm.to_mesh(mesh)
-    holder = _core.link(bpy.data.objects.new('_s3d_facets', mesh))
+    holder = bpy.data.objects.new('_s3d_facets', mesh)
     try:
         mod = holder.modifiers.new('facets', 'DECIMATE')
         mod.ratio, mod.use_collapse_triangulate = budget / triangles, True
-        graph = bpy.context.evaluated_depsgraph_get()
-        result = bpy.data.meshes.new_from_object(holder.evaluated_get(graph), depsgraph=graph)
+        result = _core.evaluated_mesh(holder)
         coarse = bmesh.new()
         coarse.from_mesh(result)
         bpy.data.meshes.remove(result)
@@ -1743,7 +1737,6 @@ def _facet_surface(bm):
         bm.free()
         return coarse
     finally:
-        bpy.data.objects.remove(holder)
         bpy.data.meshes.remove(mesh)
 
 

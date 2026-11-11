@@ -16,6 +16,27 @@ from mathutils import Matrix, Vector, geometry
 NAME = "s3d_name"
 
 
+def evaluated_mesh(ob, *, collection=None, preserve_all_data_layers=False):
+    """Evaluate private, unlinked objects without updating the program's scene.
+
+    Consume the temporary object and optional operand collection, even on failure.
+    Their input data stays owned by the caller; the returned mesh is independent.
+    """
+    scene = bpy.data.scenes.new("_s3d_evaluation")
+    objects = [ob] if collection is None else [ob, *collection.objects]
+    try:
+        scene.collection.objects.link(ob)
+        if collection is not None:
+            scene.collection.children.link(collection)
+        with bpy.context.temp_override(scene=scene, view_layer=scene.view_layers[0]):
+            graph = bpy.context.evaluated_depsgraph_get()
+            return bpy.data.meshes.new_from_object(
+                ob.evaluated_get(graph), depsgraph=graph,
+                preserve_all_data_layers=preserve_all_data_layers)
+    finally:
+        bpy.data.batch_remove([*objects, scene, *([collection] if collection is not None else [])])
+
+
 # ---------------------------------------------------------------- the program's unit
 
 #: Millimetres in one unit of a program, by the names `units` takes.
