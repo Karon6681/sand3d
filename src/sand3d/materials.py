@@ -201,11 +201,26 @@ def _nearest(ob):
     return None
 
 
+def _separate_materials():
+    """Partition shared data only where inherited material tags disagree."""
+    groups = {}
+    for ob in bpy.data.objects:
+        if ob.type == "MESH":
+            groups.setdefault(ob.data, {}).setdefault(_nearest(ob), []).append(ob)
+    for mesh, tags in groups.items():
+        for parts in list(tags.values())[1:]:
+            own = mesh.copy()
+            for ob in parts:
+                ob.data = own
+
+
 def resolve(objects=None):
     """Give every mesh the material of its nearest tagged ancestor-or-self; take ours off
     a mesh that has none any more. Nothing to do in a program that sets no material."""
     if not _core.dressed:
         return
+    if objects is None:              # tags and hierarchy change only on the whole-scene path
+        _separate_materials()
     made = {m[TAG]: m for m in bpy.data.materials if TAG in m}
     for ob in sorted(bpy.data.objects if objects is None else objects, key=lambda o: o.name):
         if ob.type != "MESH":
@@ -214,12 +229,10 @@ def resolve(objects=None):
         have = list(ob.data.materials)
         if tag is None:
             if any(m is not None and TAG in m for m in have):
-                _core.own_mesh(ob)
                 ob.data.materials.clear()
             continue
         want = _material(tag, made)
         if have != [want]:
-            _core.own_mesh(ob)
             ob.data.materials.clear()
             ob.data.materials.append(want)
         if ob.data.attributes.get("material_index") is not None:
@@ -352,18 +365,25 @@ def put_colors(mesh, colors):
 
 @contextmanager
 def exporting(root, mode="material"):
-    """Lend independent corner-coloured meshes and shared surface materials.
+    """Lend one corner-coloured mesh per source and material.
 
     A surface that gives light keeps its colour in its material, where its emission
     reads it — the mean of a colour function's — so two glows of different colours
     are two materials; every other colour goes to the corners, on a white base."""
     from .meshfile import _meshes
     saved, made = [], {}
+    shared = {}
     parts = _meshes(root)
     before = set(bpy.data.materials)
     was_dressed = _core.dressed
     try:
         for ob in parts:
+            key = (ob.data, _nearest(ob))
+            if key in shared:
+                original = ob.data
+                ob.data = shared[key]
+                saved.append((ob, original, ob.data))
+                continue
             colors = face_colors(ob)
             if colors is None and mode == "material":
                 continue
@@ -374,6 +394,7 @@ def exporting(root, mode="material"):
                 colors = [_linear(v['color'])] * len(ob.data.polygons)
             original = ob.data
             mesh = original.copy()
+            shared[key] = mesh
             saved.append((ob, original, mesh))
             ob.data = mesh
             put_colors(mesh, colors)
@@ -399,5 +420,4 @@ def exporting(root, mode="material"):
         _core.dressed = was_dressed
         for ob, original, mesh in reversed(saved):
             ob.data = original
-        bpy.data.batch_remove([*(mesh for ob, original, mesh in saved),
-                               *(set(bpy.data.materials) - before)])
+        bpy.data.batch_remove([*shared.values(), *(set(bpy.data.materials) - before)])

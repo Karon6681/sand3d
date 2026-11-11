@@ -47,6 +47,32 @@ class Copy(unittest.TestCase):
         self.assertIsNot(original.data, twin.data)
         self.assertNotEqual(original.data.materials[0], twin.data.materials[0])
 
+    def test_shared_colour_export_restores_data(self):
+        from sand3d import materials
+        original = s3d.box("part", 10, 10, 10)
+        s3d.material(original, "plastic", color=lambda x, y, z: (abs(x)/10, .2, .3))
+        twin = s3d.copy(original)
+        root = s3d.group("pair", original, twin)
+        mesh = original.data
+        count = len(bpy.data.meshes)
+        with self.assertRaisesRegex(RuntimeError, "test"):
+            with materials.exporting(root):
+                self.assertIs(original.data, twin.data)
+                self.assertIsNot(original.data, mesh)
+                raise RuntimeError("test")
+        self.assertIs(original.data, mesh)
+        self.assertIs(twin.data, mesh)
+        self.assertEqual(len(bpy.data.meshes), count)
+
+    def test_common_parent_material_keeps_sharing(self):
+        original = s3d.box("part", 10, 10, 10)
+        twin = s3d.copy(original)
+        root = s3d.group("pair", original, twin)
+        s3d.material(root, "oak")
+        self.assertIs(original.data, twin.data)
+        s3d.material(root, "steel")
+        self.assertIs(original.data, twin.data)
+
     def test_a_list_is_copied_element_by_element(self):
         """A list is worth its elements: `copy([a, b])` raised AttributeError on the list."""
         base = s3d.box("base", 40, 40, 10)
