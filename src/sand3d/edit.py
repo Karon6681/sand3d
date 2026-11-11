@@ -1761,16 +1761,19 @@ def _number(verb, what, value, positive=False):
 
 def _soup(parts):
     """One mesh holding the faces of every (mesh, matrix), moved by it and facing out."""
-    verts, faces = [], []
-    for me, m in parts:
-        base = len(verts)
-        flip = m.to_3x3().determinant() < 0
-        verts += [m @ v.co for v in me.vertices]
-        for p in me.polygons:
-            vs = [base + i for i in p.vertices]
-            faces.append(vs[::-1] if flip else vs)
+    co, rings, counts = _mesh_geometry(parts)
     mesh = bpy.data.meshes.new("_s3d_blend")
-    mesh.from_pydata(verts, [], faces)
+    mesh.vertices.add(len(co))
+    mesh.vertices.foreach_set("co", co.ravel())
+    mesh.loops.add(len(rings))
+    mesh.loops.foreach_set("vertex_index", rings)
+    mesh.polygons.add(len(counts))
+    mesh.polygons.foreach_set("loop_start", np.cumsum(counts, dtype=np.int32) - counts)
+    mesh.polygons.foreach_set("loop_total", counts)
+    # Match from_pydata's default shading and Blender's inferred edge order.
+    mesh.shade_flat()
+    if len(counts):
+        mesh.update(calc_edges=True, calc_edges_loose=False)
     return mesh
 
 

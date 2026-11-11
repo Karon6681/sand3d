@@ -118,3 +118,25 @@ class Concat(unittest.TestCase):
         finally:
             bpy.data.objects.remove(ob)
             bpy.data.meshes.remove(mesh)
+
+    def test_soup_matches_inferred_edges(self):
+        inputs = []
+        coordinates, faces = [], []
+        for reflected in (False, True):
+            me = bpy.data.meshes.new('source')
+            me.from_pydata([(0, 0, 0), (1, 0, 0), (1, 1, 0), (0, 1, 0)], [], [(0, 1, 2), (0, 2, 3)])
+            matrix = Matrix.Diagonal((-1 if reflected else 1, 1, 1, 1))
+            inputs.append((me, matrix))
+            base = len(coordinates)
+            coordinates.extend(matrix @ v.co for v in me.vertices)
+            for polygon in me.polygons:
+                ring = [base + i for i in polygon.vertices]
+                faces.append(ring[::-1] if reflected else ring)
+        expected = bpy.data.meshes.new('expected')
+        expected.from_pydata(coordinates, [], faces)
+        result = edit._soup(inputs)
+        try:
+            self.assertEqual(self.snapshot(expected), self.snapshot(result))
+        finally:
+            for mesh in [expected, result, *(me for me, _ in inputs)]:
+                bpy.data.meshes.remove(mesh)
