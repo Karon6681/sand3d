@@ -128,7 +128,7 @@ Everything on one flat `s3d.<verb>` surface:
 | profiles | `rect` `circle` `slot` `polygon` `poly` `arc` `spline` `superellipse` `text` `offset` `stroke` … (16) |
 | solids and paths | `extrude` `revolve` `sweep` `loft` `wire` `helix` `box` `cylinder` `tube` `sphere` `torus` `dome` … (15) |
 | edits | `cut` `join` `intersect` `split` `hole` `pocket` `fillet` `chamfer` `shell` `dent` … (15) |
-| frames and placement | `Frame` `face` `edge` `bbox` `local` `at` `transform` `grid` `ring` `along` `snap` |
+| frames and placement | `Frame` `face` `edge` `bbox` `describe` `local` `at` `transform` `grid` `ring` `along` `snap` |
 | articulation | `joint` `pose` `seat` |
 | assembly | `group` `assembly` `attach` `export` `units` `fingerprint` … (8) |
 | parts and materials | `gear` `knurl` `thread` `material` |

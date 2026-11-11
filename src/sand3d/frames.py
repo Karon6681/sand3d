@@ -360,10 +360,10 @@ def _sides(which, what):
     return [("xyz".index(t[-1].lower()), -1 if t[0] in "-<" else 1) for t in terms]
 
 
-def _placed_points(ob):
-    """Every mesh point under `ob` (itself included), in the space `ob` is in: the
-    placements composed and snapped as `_core.world` does, the points moved in double
-    precision."""
+def _placed_points(ob, m=None):
+    """Every mesh point under `ob` (itself included), in the space `ob` is in (or where
+    `m` takes `ob`'s own space): the placements composed and snapped as `_core.world`
+    does, the points moved in double precision."""
     out = []
 
     def walk(o, m):
@@ -376,7 +376,7 @@ def _placed_points(ob):
                 out.append(tuple(r[0] * x + r[1] * y + r[2] * z + r[3] for r in rows))
         for c in o.children:
             walk(c, _core.snapped(m @ c.matrix_parent_inverse @ c.matrix_basis))
-    walk(ob, _core.snapped(Matrix(ob.matrix_basis)))
+    walk(ob, _core.snapped(Matrix(ob.matrix_basis)) if m is None else m)
     return out
 
 
@@ -409,45 +409,56 @@ def bbox(ob, which):
 def describe(ob):
     """What it holds: size, volume, face and edge names, joints, material, parts.
 
-    A dict a program can print or a model can read before its next verb: the bounding
-    box `ob` and everything under it span in the space it is in, and for a solid its
-    volume, how many edges are open (0 for a closed solid), and every face and edge name
-    it carries with how many faces or edges hold it (and the faces' area). A name is
-    given as `face` and `edge` read it. Then the joints the part hangs by, the material
-    it wears, and the same for each part under it. Lengths are in the program's unit."""
-    from . import joints, materials
+    A dict a program can print or a model can read before its next verb: the box `ob`
+    and everything under it span, in the space `ob` is in (None if it holds no solid);
+    for a solid, its volume, how many edges bound one face only and how many bound more
+    than two (0 and 0 for a closed solid), and every face and edge name it carries, with
+    how many faces or edges hold it and the faces' area; the joints it hangs by, the
+    material it wears, and the same for each part under it, its box in the same space as
+    `ob`'s. A name is spelled as `face`, `edge` and `edges=` read it, a long one
+    shortened; `face` gives a frame for a flat face only. Lengths are in the program's
+    unit."""
     from .assembly import Handle
     ob = ob.root if isinstance(ob, Handle) else ob
     if not isinstance(ob, bpy.types.Object):
         raise TypeError(f"describe: a part, a group or an assembly is expected, not {type(ob).__name__}")
-    pts = _placed_points(ob)
-    lo = [min(p[k] for p in pts) for k in range(3)] if pts else [0.0] * 3
-    hi = [max(p[k] for p in pts) for k in range(3)] if pts else [0.0] * 3
-    out = {"name": _core.given_name(ob), "bbox": [lo, hi], "size": [b - a for a, b in zip(lo, hi)]}
+    return _describe(ob, _core.snapped(Matrix(ob.matrix_basis)))
+
+
+def _describe(ob, m):
+    """`describe` of `ob`, its own space taken to the space of the part described by `m`."""
+    from . import joints, materials
+    pts = _placed_points(ob, m)
+    out = {"name": _core.given_name(ob), "bbox": None, "size": None}
+    if pts:
+        lo, hi = [min(p[k] for p in pts) for k in range(3)], [max(p[k] for p in pts) for k in range(3)]
+        out["bbox"], out["size"] = [lo, hi], [b - a for a, b in zip(lo, hi)]
     if ob.type == "MESH":
         me = ob.data
         bm = bmesh.new()
         bm.from_mesh(me)
-        bm.transform(ob.matrix_basis)
-        out["volume"] = bm.calc_volume(signed=True)
-        out["open_edges"] = sum(len(e.link_faces) != 2 for e in bm.edges)
+        out["volume"] = bm.calc_volume(signed=True)       # in its own space: placement moves no volume
+        out["open_edges"] = sum(len(e.link_faces) < 2 for e in bm.edges)
+        out["nonmanifold_edges"] = sum(len(e.link_faces) > 2 for e in bm.edges)
         bm.free()
         areas = [p.area for p in me.polygons]
-        out["faces"], out["edges"] = {}, {}
-        for att in me.attributes:
-            for prefix, key in ((_core.FACE_TAG, "faces"), (_core.EDGE_TAG, "edges")):
-                held = [v.value for v in att.data] if att.name.startswith(prefix) else []
-                if any(held):
-                    name = att.name[len(prefix):]
-                    out[key][name] = {"count": sum(held)} if key == "edges" else {
-                        "count": sum(held), "area": sum(a for a, v in zip(areas, held) if v)}
+        out["faces"] = {n: {"count": sum(h), "area": sum(a for a, v in zip(areas, h) if v)}
+                        for n, h in _held(me, _core.FACE_TAG).items()}
+        out["edges"] = {n: {"count": sum(h)} for n, h in _held(me, _core.EDGE_TAG).items()}
     parent = joints.parent_of(ob)
-    out["joints"] = [{"name": j["name"], "kind": j["kind"], "on": _core.given_name(parent)}
+    out["joints"] = [{"name": j["name"], "kind": j["kind"], "on": parent and _core.given_name(parent)}
                      for j in joints.joints_of(ob)]
     tag = materials._nearest(ob)
     out["material"] = materials._name(tag) if tag else None
-    out["parts"] = [describe(c) for c in sorted(ob.children, key=_core.given_name)]
+    out["parts"] = [_describe(c, _core.snapped(m @ c.matrix_parent_inverse @ c.matrix_basis))
+                    for c in sorted(ob.children, key=_core.given_name)]
     return out
+
+
+def _held(me, prefix):
+    """{name: which elements hold it} for the names under `prefix` some element holds."""
+    return {a.name[len(prefix):]: h for a in me.attributes if a.name.startswith(prefix)
+            for h in [[v.value for v in a.data]] if any(h)}
 
 
 def local(ob, x=0, y=0, z=0, rx=0, ry=0, rz=0):
