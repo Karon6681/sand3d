@@ -38,6 +38,16 @@ class MaterialFunction(unittest.TestCase):
             with materials.exporting(a):
                 self.assertEqual(evaluate.call_count, 1)
 
+    def test_corner_colours(self):
+        a = s3d.cone('mixed', 20, 50)
+        colors = [materials._linear('#336699' if i % 2 else '#ff0000')
+                  for i in range(len(a.data.polygons))]
+        materials.put_colors(a.data, colors)
+        for face, color in zip(a.data.polygons, colors):
+            for i in face.loop_indices:
+                for actual, expected in zip(a.data.color_attributes['Colour'].data[i].color, color):
+                    self.assertAlmostEqual(actual, expected, places=7)
+
     def test_examples(self):
         a = s3d.loft('limb', *(s3d.station(z, 20, 20) for z in (0, 80, 160, 240)))
         s3d.material(a, 'plastic', color=lambda x,y,z: '#c9a137' if int(z//80)%2 else '#2c2d33')

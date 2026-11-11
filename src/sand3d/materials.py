@@ -296,9 +296,10 @@ def put_colors(mesh, colors):
     attr = mesh.color_attributes.get(COLOR_ATTRIBUTE)
     if attr is None:
         attr = mesh.color_attributes.new(name=COLOR_ATTRIBUTE, type='FLOAT_COLOR', domain='CORNER')
-    for face, color in zip(mesh.polygons, colors):
-        for i in face.loop_indices:
-            attr.data[i].color = color
+    sizes = np.empty(len(mesh.polygons), dtype=np.int32)
+    mesh.polygons.foreach_get("loop_total", sizes)
+    corners = np.repeat(np.asarray(colors, dtype=np.float32).reshape(-1, 4), sizes, axis=0)
+    attr.data.foreach_set("color", corners.ravel())
     mesh.color_attributes.active_color = attr
     mesh.color_attributes.render_color_index = list(mesh.color_attributes).index(attr)
 
