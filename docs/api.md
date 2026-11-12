@@ -52,6 +52,7 @@ stroke(path, t)  # A band t wide along an open path, centred on it: a closed out
 wrap(*profiles)  # Convex outline round profiles
 mirror(p, flip='x')  # Plus its image, flip negated
 # solids, paths
+fill(name, container, level, clearance=None)  # Bounded voids below a height or Frame; None: -0.04 mm overlap; 0: exact contact
 field(name, size, density, *, cell, level=0, min_component_cells=3)  # Closed isosurface: density(x,y,z) < level; size=(w,d,h), local coordinates, centred XY, Z=0..h; faces field
 noise(x, y, z, seed=0, kind="perlin")  # Dimensionless scalar or broadcast arrays [-1,1]; perlin cells ridged turbulence; independent of displace
 hull(name, points)  # Closed convex hull where points are given, no recentering; (x, y, z) or Frame origins; at least 4 distinct non-coplanar points, finite coordinates; unnamed planar faces (read by direction), edges rim
@@ -382,3 +383,28 @@ All fixed-count results shade flat unless `smooth=True` or a part has an explici
 `smooth` override. `branches` and `along` create paths/frames, not surfaces;
 wire/sweep consume those paths with the existing angular rule. Bend and twist
 already refine by total angle. Auto sampling, refinement and shading are unchanged.
+
+### Filling a container
+
+`fill("soil", pot, 80)` makes a new solid in the voids retained below local
+height 80, preserving the container. A part, group or assembly supplies its own
+height frame; a list of parts requires a `Frame`, for example
+`fill("river", channel, local(channel, z=12, ry=3))`. The frame's normal points
+out of the fill; an unbound Frame is in world space. The result is placed in
+that plane's frame, with the free surface at local Z=0, named `top` (also its
+boundary edges); other faces are `side`. Multiple pockets share one object.
+Closed cavities are included, even without a free surface. Container parts must
+be closed manifold solids; an open cup means an opening between solid walls,
+not a mesh with missing faces.
+
+`clearance=None` overlaps the walls by approximately 0.04 mm, converted to the
+program's unit, to avoid coincident transmissive surfaces. Explicit clearance
+is in program units: positive leaves a gap, negative overlaps, zero gives
+exact boolean contact. Clearance offsets the retained boundary after finding
+pockets and leaves the level plane fixed; it is a small rendering allowance,
+not a robust large geometric offset. Large values can self-intersect or collapse
+thin features. A level below the cavity floor, above an open rim or connected
+to a leak retains nothing and raises `ValueError`; leaking pockets are discarded
+if other pockets retain material. This is static geometry, without fluid flow,
+meniscus, trapped-air modelling or automatic spill-level search. A tilted
+channel needs closed ends below its chosen plane.

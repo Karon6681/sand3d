@@ -697,3 +697,10 @@ def surface_details():
     petal = s3d.loft('petal',s3d.station(0,4,2),s3d.station(12,8,2),s3d.station(20,0,0),tip='sharp',rings=2)
     s3d.material(petal,'plastic',color=lambda x,y,z,n,u: (u,0,1-u))
     return support,patch,petal
+
+
+@case("fill")
+def retained_fill():
+    pot = s3d.shell(s3d.box("pot", 40, 30, 30), 2, open="top")
+    s3d.fill("contents", pot, 24)
+    s3d.fill("sloped", pot, s3d.local(pot, z=15, ry=8), clearance=0)

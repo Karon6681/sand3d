@@ -1,5 +1,5 @@
 {
- "bpy": "4.5.15 LTS",
+ "bpy": "4.5.3 LTS",
  "digests": {
   "case:profile_shapes": "f7ec6b11db40c9d6",
   "case:stations": "5e4438297c70327f",
@@ -36,8 +36,8 @@
   "case:mechanism_posed": "387657250adb99c1",
   "case:parts_seated": "7277251847fda842",
   "case:assembly_layer": "8af7a0b9e624e741",
-  "case:export_glb": "bf9f924dac9a072d",
-  "case:export_articulated": "59590a8f412c8dbc",
+  "case:export_glb": "311822d6b8d6e2a8",
+  "case:export_articulated": "5d19a9ce060cc2c4",
   "case:export_usd": "ce602d8180c1f8a8",
   "case:export_ifc": "13d05c90ead7eeb7",
   "case:export_meshes": "49d47323e897e4ac",
@@ -63,6 +63,7 @@
   "case:surface_scatter": "bf605f9018abd9c5",
   "case:implicit_solid": "8277d78dd0cf19b5",
   "case:surface_details": "295fbb8c7af6c31d",
+  "case:retained_fill": "c696fe6bd02b2d5f",
   "program:weight_stack.weight_stack": "c47479f9c8875e3c",
   "program:tufted_chair.tufted_chair": "ecdfaf895171a615",
   "program:cutlery.spoon": "11febab11b1d4994",

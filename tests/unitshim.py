@@ -48,6 +48,7 @@ LENGTHS = {
     "wrap": {"profiles": "P"},
     "mirror": {"p": "-", "flip": "-"},
     # solids, paths
+    "fill": {"name": "-", "container": "-", "level": "P", "clearance": "L"},
     "field": {"name": "-", "size": "P", "density": "density", "cell": "L", "level": "-", "min_component_cells": "-"},
     "noise": {"x": "-", "y": "-", "z": "-", "seed": "-", "kind": "-"},
     "hull": {"name": "-", "points": "P"},
