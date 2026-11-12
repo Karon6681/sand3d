@@ -495,6 +495,21 @@ than `min_component_cells * cell` (default 3). The largest component is always
 kept; `min_component_cells=0` keeps every component. The filter removes complete
 closed shells, never individual faces. Thin connected features remain.
 
+## Irregular in outline first, on the surface second
+
+A natural form reads as irregular by its silhouette and proportions before its skin.
+Small noise stacked on a symmetric base gives a rough skin on a regular shape: break the
+outline first (uneven points for `hull`, uneven lengths with `vary`, a lean with `bend`,
+`twist` or `taper`, a `displace` whose features are about as large as the part), then
+add fine surface detail:
+
+```python
+form = s3d.hull("form", sites.jitter(x=lean, y=lean, seed=seed))   # uneven proportions
+s3d.bend(form, tilt)                                               # the whole form leans
+s3d.displace(form, swell, size=width, seed=seed)                  # the outline moves
+s3d.displace(form, grain, size=grain_size, seed=seed + 1)         # then the skin
+```
+
 ## Things strewn on uneven ground
 
 Never compute where a stone lands from the terrain's own formula. Sample the
