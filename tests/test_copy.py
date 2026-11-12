@@ -130,7 +130,7 @@ class Copy(unittest.TestCase):
     def test_a_copy_named(self):
         plate = s3d.extrude("plate", s3d.rect(40, 20), 5)
         twin = s3d.copy(plate, name="plate_2")
-        self.assertEqual((twin["s3d_name"], twin.name), ("plate_2", "plate_2"))
+        self.assertEqual((twin["s3d_name"], twin.name, twin.data.name), ("plate_2", "plate_2", "plate_2"))
         self.assertEqual((plate["s3d_name"], plate.name), ("plate", "plate"), "the original keeps its name")
         self.assertEqual(mesh_of(twin), mesh_of(plate))
         handle = s3d.copy(s3d.assembly("pair", plate, twin), name="pairs")
@@ -150,7 +150,7 @@ class Copy(unittest.TestCase):
         left = s3d.transform(s3d.copy(door, name={"right_door": "left_door", "panel": "left_panel",
                                                   "right_hinge": "left_hinge"}), mirror="y")
         self.assertEqual((left["s3d_name"], left.name), ("left_door", "left_door"))
-        self.assertEqual([c["s3d_name"] for c in left.children], ["left_panel"])
+        self.assertEqual([(c["s3d_name"], c.data.name) for c in left.children], [("left_panel", "left_panel")])
         self.assertEqual([j["name"] for j in joints_of(left)], ["left_hinge"])
         self.assertEqual([j["name"] for j in joints_of(door)], ["right_hinge"], "the original's joint keeps its name")
         root = s3d.group("cabinet", cab, door, left)

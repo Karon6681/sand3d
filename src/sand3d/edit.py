@@ -1284,9 +1284,12 @@ def _checked_name(new):
 
 
 def _rename(ob, new):
-    """`ob` named `new`: its given name, and Blender's, which the GLB's nodes carry."""
+    """`ob` named `new`: its given name, and Blender's, which the GLB's nodes carry; its
+    mesh too, which the GLB's meshes carry."""
     ob[_core.NAME] = _checked_name(new)
     ob.name = new
+    if ob.data is not None:
+        ob.data.name = new
 
 
 def _twin(ob):
