@@ -118,7 +118,7 @@ gear(name, teeth, module, width, bore=0, angle=20)  # Involute spur gear
 knurl(name, d, h, pitch=None, straight=False)  # Knurled grip; pitch 1 mm by default
 thread(name, d, length, pitch, left=False)  # Threaded rod
 # materials
-material(ob, kind, color=None, roughness=None, metallic=None, opacity=None, emission=None, absorb=None, absorb_distance=None, thickness=None, ior=None, transmission=None)  # Kind: oak walnut pine birch steel brushed_steel chrome aluminium brass copper painted_metal plastic glossy_plastic rubber glass ceramic fabric velvet leather marble concrete bark leaf moss grass rock soil sand water snow foam light; color "#rrggbb" or color(x,y,z[,n[,u]])
+material(ob, kind, color=None, roughness=None, metallic=None, opacity=None, emission=None, absorb=None, absorb_distance=None, thickness="auto", ior=None, transmission=None)  # Kind: oak walnut pine birch steel brushed_steel chrome aluminium brass copper painted_metal plastic glossy_plastic rubber glass ceramic fabric velvet leather marble concrete bark leaf moss grass rock soil sand water snow foam light; color "#rrggbb" or color(x,y,z[,n[,u]])
 # articulation
 joint(name, child, on, kind='revolute', axis='normal', range=None, follows=None, ratio=1)  # How child moves on the part on was read on: revolute (range in degrees), continuous (no range), prismatic (range in the unit), free (no axis, no range); follows: a child or a joint name, and this joint's value is ratio × its (degrees per unit, or units per degree), no range; returns child
 pose(ob, value, joint=None)  # Move the mechanism: that joint to value (degrees or the unit), an error outside its range; what it carries follows; joint= when child has two
@@ -141,7 +141,7 @@ its linear RGB value after travelling `absorb_distance` in program units.
 Transmittance at distance x is `linear(absorb) ** (x / absorb_distance)`.
 Distance 0 disables absorption. `ior` is finite in 1..1000; `transmission` in 0..1
 controls the transmitted fraction, independently of alpha (`opacity`).
-`absorb_distance` and `thickness` must be finite and nonnegative.
+`absorb_distance` must be finite and nonnegative; `thickness` is "auto" or such a length.
 
 | preset | surface colour | roughness | transmission | IOR | absorb at distance |
 |---|---|---|---|---|---|
@@ -150,11 +150,13 @@ controls the transmitted fraction, independently of alpha (`opacity`).
 
 Water is a volume bounded by a **closed mesh**, not a single surface: model its
 bottom and sides as well as its top, with outward normals. Cycles uses actual ray
-length for absorption. `thickness` is a constant depth estimate for glTF raster
-viewers, default 1 m in program units; it creates no geometry. Set it to a useful
-representative depth (a varying-depth pool needs a thickness map for exact raster
-results; none is generated). Zero thickness disables absorption and omits the glTF
-volume extension; Cycles surface refraction still follows the mesh.
+length for absorption. `thickness` is the constant depth glTF raster viewers
+assume, since they cannot follow rays through the mesh. `"auto"`, the default,
+estimates it at export from the meshes that wear the material: 2 × volume / area,
+the thickness of a slab (D/3 for a sphere of diameter D), one value per material;
+a length sets it. It creates no geometry, and a varying-depth pool still shows one
+depth in those viewers (no thickness map is generated). Zero thickness disables
+absorption and omits the glTF volume extension; Cycles surface refraction still follows the mesh.
 A black absorb channel is approximated as 1e-6 in Cycles to keep density finite.
 
 GLB carries `KHR_materials_volume`, `KHR_materials_ior` and transmission; absorption

@@ -312,12 +312,31 @@ class Absorption(unittest.TestCase):
                 volume = ext["KHR_materials_volume"]
                 self.assertAlmostEqual(volume["attenuationDistance"], 1)
                 # Mesh coordinates remain in program units; the root scales to SI.
-                self.assertAlmostEqual(volume["thicknessFactor"], metre)
+                # "auto": 2 x volume / area of the cube, a third of its side.
+                self.assertAlmostEqual(volume["thicknessFactor"], metre / 3, places=4)
                 for a, b in zip(volume["attenuationColor"], tint):
                     self.assertAlmostEqual(a, b)
                 self.assertAlmostEqual(ext["KHR_materials_ior"]["ior"], 1.333, places=5)
                 self.assertEqual(tuple(node.inputs["Color"].default_value), rgba)
                 self.assertEqual(node.inputs["Density"].default_value, density)
+
+    def test_auto_thickness_follows_the_meshes(self):
+        slab = s3d.material(s3d.box("puddle", 3000, 3000, 300), "water")
+        doc, _ = export(slab)
+        self.assertAlmostEqual(doc["materials"][0]["extensions"]["KHR_materials_volume"]["thicknessFactor"],
+                               250, places=3)
+        # One value per material: the meshes wearing it are pooled.
+        s3d.empty_scene()
+        a = s3d.material(s3d.box("shallow", 1000, 1000, 20), "water")
+        b = s3d.at(s3d.material(s3d.box("deep", 1000, 1000, 1000), "water"), x=3000)
+        doc, _ = export(s3d.group("ponds", a, b))
+        va, aa = 1000 * 1000 * 20, 2 * 1000 * 1000 + 4 * 1000 * 20
+        vb, ab = 1000 ** 3, 6 * 1000 ** 2
+        self.assertEqual(len(doc["materials"]), 1)
+        self.assertAlmostEqual(doc["materials"][0]["extensions"]["KHR_materials_volume"]["thicknessFactor"],
+                               2 * (va + vb) / (aa + ab), places=3)
+        with self.assertRaises(ValueError):
+            s3d.material(a, "water", thickness="deep")
 
     def test_overrides_disable_and_invalid_values(self):
         ob = s3d.box("pane", 10, 10, 10)
