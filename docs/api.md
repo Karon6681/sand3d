@@ -495,6 +495,10 @@ Closed cavities are included, even without a free surface. Container parts must
 be closed manifold solids; an open cup means an opening between solid walls,
 not a mesh with missing faces.
 
+[examples/pond.py](examples/pond.py) digs a basin, fills it and dresses the water:
+`pond()` is still water, `pond(swell=15, wavelength=400)` a breeze on the surface
+alone (`displace(..., faces="top")` keeps the shoreline on the banks).
+
 `clearance=None` overlaps the walls by approximately 0.04 mm, converted to the
 program's unit, to avoid coincident transmissive surfaces. Explicit clearance
 is in program units: positive leaves a gap, negative overlaps, zero gives
