@@ -36,8 +36,8 @@
   "case:mechanism_posed": "387657250adb99c1",
   "case:parts_seated": "37ef3a756eb8cfe1",
   "case:assembly_layer": "8af7a0b9e624e741",
-  "case:export_glb": "e9313601bdeae596",
-  "case:export_articulated": "43f4f6efe73d99c5",
+  "case:export_glb": "b86f969688b56f5a",
+  "case:export_articulated": "1056bb5b95a1d463",
   "case:export_usd": "ce602d8180c1f8a8",
   "case:export_ifc": "13d05c90ead7eeb7",
   "case:export_meshes": "49d47323e897e4ac",
@@ -76,6 +76,7 @@
   "program:lamp.lamp": "ff371ec43492e195",
   "program:rack.rack": "eb509aa649af09c0",
   "program:chair.chair": "c85b1f4ccb835a3a",
-  "program:gate.gate": "876579fdcab50a89"
+  "program:gate.gate": "876579fdcab50a89",
+  "program:pond.pond": "1d2b46b1f7fe6fb6"
  }
 }
