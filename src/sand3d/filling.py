@@ -54,7 +54,7 @@ def fill(name, container, level, clearance=None):
                 valid = bool(check.faces) and all(e.is_manifold for e in check.edges)
                 check.free()
                 if not valid:
-                    raise ValueError("fill: container parts must be closed manifold solids")
+                    raise ValueError(_not_closed(part))
         coords = [v.co for mesh in meshes for v in mesh.vertices]
         if not coords:
             raise ValueError("fill: container has no solids")
@@ -180,3 +180,32 @@ def fill(name, container, level, clearance=None):
         for mesh in meshes:
             if mesh.users == 0:
                 bpy.data.meshes.remove(mesh)
+
+
+def _not_closed(part):
+    """Which part is not a closed solid, and where: its open and over-shared edges, in its own frame."""
+    name = _core.given_name(part)
+    check = bmesh.new()
+    check.from_mesh(part.data)
+    try:
+        if not check.faces:
+            return f"fill: container part {name!r} has no faces — every part must be a closed solid"
+        open_edges = [e for e in check.edges if len(e.link_faces) < 2]
+        shared = [e for e in check.edges if len(e.link_faces) > 2]
+        bad = open_edges + shared
+        points = [v.co for e in bad for v in e.verts]
+        lo = [min(p[i] for p in points) for i in range(3)]
+        hi = [max(p[i] for p in points) for i in range(3)]
+        where = ", ".join(f"{axis} {lo[i]:.4g}..{hi[i]:.4g}" for i, axis in enumerate("xyz"))
+        counts = []
+        if open_edges:
+            counts.append(f"{len(open_edges)} open edge{'s' * (len(open_edges) > 1)}")
+        if shared:
+            counts.append(f"{len(shared)} edge{'s' * (len(shared) > 1)} shared by more than two faces")
+        return (f"fill: container part {name!r} is not a closed solid: {' and '.join(counts)}, "
+                f"in its own frame at {where}. Every part must be closed, even when its hollow is open "
+                f"at the top; the usual causes are a profile that does not close, or a join or merge "
+                f"that left a seam or two surfaces touching along an edge")
+    finally:
+        check.free()
+

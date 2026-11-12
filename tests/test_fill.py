@@ -146,6 +146,18 @@ class Fill(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "leak|retained"):
             s3d.fill("leaking", glass, 20)
 
+    def test_open_part_is_named_and_located(self):
+        tray = s3d.shell(s3d.box("tray", 40, 30, 20), 2, open="top")
+        bm = bmesh.new()
+        bm.from_mesh(tray.data)
+        bm.faces.ensure_lookup_table()
+        lowest = min(bm.faces, key=lambda f: f.calc_center_median().z)
+        bmesh.ops.delete(bm, geom=[lowest], context="FACES_ONLY")
+        bm.to_mesh(tray.data)
+        bm.free()
+        with self.assertRaisesRegex(ValueError, r"'tray' is not a closed solid: \d+ open edges?, in its own frame at x "):
+            s3d.fill("water", tray, 12)
+
     def test_submerged_obstacles(self):
         cup = s3d.shell(s3d.box("cup", 30, 30, 30), 2, open="top")
         stone = s3d.at(s3d.box("stone", 4, 4, 4), z=5)
