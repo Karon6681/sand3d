@@ -707,3 +707,10 @@ def wave_surfaces():
     s3d.displace(ob, .1, 2, direction="+Z",
                  noise=s3d.waves(2, centers=[(-2, 0), (2, 1)], decay=4))
     return ob
+
+
+@case("fill")
+def retained_fill():
+    pot = s3d.shell(s3d.box("pot", 40, 30, 30), 2, open="top")
+    s3d.fill("contents", pot, 24)
+    s3d.fill("sloped", pot, s3d.local(pot, z=15, ry=8), clearance=0)
