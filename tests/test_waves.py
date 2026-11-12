@@ -53,7 +53,7 @@ class Waves(unittest.TestCase):
         self.assertLess(sharp(.2, 0, 0), smooth(.2, 0, 0))
         self.assertLess(sharp(1.8, 0, 0), smooth(1.8, 0, 0))
 
-    def test_radial_decay_and_average(self):
+    def test_radial_decay_and_envelopes(self):
         f = s3d.waves(2, centers=[(1, -1)], decay=5)
         r = np.arange(6)*2
         np.testing.assert_allclose(f(1+r, -1, 0), np.exp(-r/5))
@@ -63,6 +63,14 @@ class Waves(unittest.TestCase):
         b = s3d.waves(2, centers=[(3, 1)])
         both = s3d.waves(2, centers=[(0, 0), (3, 1)])
         np.testing.assert_allclose(both(x, 0, 0), (a(x, 0, 0)+b(x, 0, 0))/2)
+        # With decay, a ring far from the others keeps its own height; overlaps stay bounded.
+        lone = s3d.waves(2, centers=[(0, 0)], decay=3)
+        three = s3d.waves(2, centers=[(0, 0), (200, 0), (0, 200)], decay=3)
+        np.testing.assert_allclose(three(x, 0, 0), lone(x, 0, 0), atol=1e-12)
+        g = np.linspace(-5, 5, 201)
+        X, Y = np.meshgrid(g, g)
+        crowd = s3d.waves(1.3, centers=[(0, 0), (.4, .1), (-.3, .5)], decay=4, sharpness=.6)
+        self.assertLessEqual(np.abs(crowd(X, Y, 0)).max(), 1.0)
 
     def test_units_and_composition(self):
         x = np.linspace(-10, 10, 100)

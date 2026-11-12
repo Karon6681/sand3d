@@ -301,9 +301,11 @@ the primary direction, with wavelengths 0.85..1.15 times the requested length
 and random phases. The primary carries half the weight, each satellite 1/8;
 zero spread is one exact cosine and ignores seed. `centers=[(x,y), ...]` selects
 circular waves instead, excluding direction and nonzero spread. Sources share
-wavelength, sharpness and phase and are averaged to retain [-1,1]; adding a
-source can reduce peak amplitude. Optional positive `decay` is an e-folding
-length: each source is multiplied by exp(-distance/decay). It requires centers.
+wavelength, sharpness and phase. Optional positive `decay` is an e-folding
+length: each source is multiplied by its envelope exp(-distance/decay), and the
+sum is divided by the summed envelopes where they exceed 1, so a ring far from
+the others keeps its full height and overlaps stay in [-1,1]. Without decay the
+sources are averaged. It requires centers.
 Seed affects spread only. Inputs must be finite; distance / wavelength must
 have magnitude <= 2**50. `waves` creates no mesh and stores no animation state.
 

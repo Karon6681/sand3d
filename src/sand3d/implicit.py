@@ -81,7 +81,7 @@ def waves(wavelength, direction=None, centers=None, sharpness=0, spread=0,
 
     Direction and phase are degrees. Spread is a half-angle in degrees (0..90).
     Sharpness (0..1) phase-warps a cosine: narrow crests and broad troughs,
-    without horizontal motion. Circular sources are averaged, never summed.
+    without horizontal motion. Circular sources are divided by their summed envelopes, at least 1.
     Decay is the positive e-folding distance from each source, not a shore mask.
     """
     def number(name, value):
@@ -165,12 +165,15 @@ def waves(wavelength, direction=None, centers=None, sharpness=0, spread=0,
             for dx, dy, ratio, offset, weight in components:
                 result += weight * profile(x * dx + y * dy, ratio, offset)
         else:
+            # Normalised by the summed envelopes, never below 1: a lone ring keeps
+            # its full height, overlapping rings share [-1, 1] where they meet.
+            weight = np.zeros(x.shape, dtype=np.float64)
             for cx, cy in sources:
                 distance = np.hypot(x - cx, y - cy)
-                value = profile(distance)
-                if decay is not None:
-                    value *= np.exp(-distance / decay)
-                result += value / len(sources)
+                envelope = np.ones(x.shape) if decay is None else np.exp(-distance / decay)
+                result += envelope * profile(distance)
+                weight += envelope
+            result /= np.maximum(weight, 1.0) if decay is not None else len(sources)
         result = np.clip(result, -1, 1)
         return float(result) if result.ndim == 0 else result
 
