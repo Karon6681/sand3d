@@ -17,7 +17,7 @@ from .assembly import Handle, assembly, attach, empty_scene, export, facets, gro
 from .edit import (chamfer, copy, cut, delete, dent, fillet, hole, intersect, join, merge, pocket, scale, seat, shell,
                    soften, split)
 from .parts import gear, knurl, thread
-from .frames import Frame, along, at, bbox, grid, local, ring, snap, transform
+from .frames import Frame, along, at, bbox, describe, grid, local, ring, snap, transform
 from .materials import material, resolve as _resolve
 from .joints import joint, placed_again as _placed_again, placed_on as _placed_on, pose
 from .profile import Path as _Path, Placed as _Placed, arc, circle, ellipse, mirror, offset, poly, polygon, rect, slot, spline, station, stroke, superellipse, tangent_arc, text, wrap
@@ -38,7 +38,7 @@ __all__ = [
     "cut", "join", "intersect", "split", "delete", "copy", "hole", "pocket", "merge", "scale",
     "fillet", "chamfer", "soften", "shell", "dent",
     # frames, placement
-    "Frame", "bbox", "local", "at", "transform", "grid", "ring", "along", "snap",
+    "Frame", "bbox", "describe", "local", "at", "transform", "grid", "ring", "along", "snap",
     # parts
     "gear", "knurl", "thread",
     # materials

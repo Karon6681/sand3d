@@ -280,6 +280,18 @@ def frames_on_boxes():
     return [f.matrix for f in frames] + [s3d.bbox(unit, "+X+Y").matrix, s3d.bbox(shelf, "-X").matrix]
 
 
+@case("describe")
+def described():
+    """A drilled box with a hinged lid, described."""
+    box = s3d.box("box", 100, 60, 30)
+    s3d.hole(box, 8, on=box.face("top"), depth=12)
+    s3d.fillet(box, 1, edges="bottom")
+    lid = s3d.at(s3d.box("lid", 100, 60, 4), z=30)
+    s3d.joint("hinge", lid, s3d.bbox(box, "-Y+Z"), axis="+X", range=(0, 110))
+    s3d.material(lid, "oak")
+    return s3d.describe(s3d.group("chest", box, lid))
+
+
 @case("joint")
 def joints_declared():
     """A washing machine's four joints, a mirrored twin of its door, a screw cap: two
