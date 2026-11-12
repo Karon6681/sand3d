@@ -90,7 +90,7 @@ def export(root, path, colors="material"):
     actual = root.root if isinstance(root, Handle) else root
     if os.path.splitext(str(path))[1].lower() == '.glb':
         materials.resolve()
-        with materials.exporting(actual, colors):
+        with materials.exporting(actual, colors), materials.volume_export():
             return _export(root, path)
     materials.resolve()
     return _export(root, path)

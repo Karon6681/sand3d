@@ -118,7 +118,7 @@ gear(name, teeth, module, width, bore=0, angle=20)  # Involute spur gear
 knurl(name, d, h, pitch=None, straight=False)  # Knurled grip; pitch 1 mm by default
 thread(name, d, length, pitch, left=False)  # Threaded rod
 # materials
-material(ob, kind, color=None, roughness=None, metallic=None, opacity=None, emission=None)  # Kind: oak walnut pine birch steel brushed_steel chrome aluminium brass copper painted_metal plastic glossy_plastic rubber glass ceramic fabric velvet leather marble concrete bark leaf moss grass rock soil sand water snow light; color "#rrggbb" or color(x,y,z[,n[,u]])
+material(ob, kind, color=None, roughness=None, metallic=None, opacity=None, emission=None, absorb=None, absorb_distance=None, thickness=None, ior=None, transmission=None)  # Kind: oak walnut pine birch steel brushed_steel chrome aluminium brass copper painted_metal plastic glossy_plastic rubber glass ceramic fabric velvet leather marble concrete bark leaf moss grass rock soil sand water snow light; color "#rrggbb" or color(x,y,z[,n[,u]])
 # articulation
 joint(name, child, on, kind='revolute', axis='normal', range=None, follows=None, ratio=1)  # How child moves on the part on was read on: revolute (range in degrees), continuous (no range), prismatic (range in the unit), free (no axis, no range); follows: a child or a joint name, and this joint's value is ratio × its (degrees per unit, or units per degree), no range; returns child
 pose(ob, value, joint=None)  # Move the mechanism: that joint to value (degrees or the unit), an error outside its range; what it carries follows; joint= when child has two
@@ -134,6 +134,45 @@ facets(n=None, smooth=...)  # Read count, or set segments per turn (integer >=3 
 units(name=None)  # Length unit: "mm" (default), "cm", "m"
 fingerprint()  # Digest of the source
 ```
+
+`material` overrides inherit their preset when None. `absorb` is an sRGB colour
+(`#rrggbb` or RGB tuple), independent of the surface `color`: white light becomes
+its linear RGB value after travelling `absorb_distance` in program units.
+Transmittance at distance x is `linear(absorb) ** (x / absorb_distance)`.
+Distance 0 disables absorption. `ior` is finite in 1..1000; `transmission` in 0..1
+controls the transmitted fraction, independently of alpha (`opacity`).
+`absorb_distance` and `thickness` must be finite and nonnegative.
+
+| preset | surface colour | roughness | transmission | IOR | absorb at distance |
+|---|---|---|---|---|---|
+| `water` | `#f4f8f8` | 0.08 | 1 | 1.333 | `#b8e8ed` at 1 m |
+| `glass` | `#ffffff` | 0 | 1 | 1.5 | none |
+
+Water is a volume bounded by a **closed mesh**, not a single surface: model its
+bottom and sides as well as its top, with outward normals. Cycles uses actual ray
+length for absorption. `thickness` is a constant depth estimate for glTF raster
+viewers, default 1 m in program units; it creates no geometry. Set it to a useful
+representative depth (a varying-depth pool needs a thickness map for exact raster
+results; none is generated). Zero thickness disables absorption and omits the glTF
+volume extension; Cycles surface refraction still follows the mesh.
+A black absorb channel is approximated as 1e-6 in Cycles to keep density finite.
+
+GLB carries `KHR_materials_volume`, `KHR_materials_ior` and transmission; absorption
+requires a viewer supporting these extensions. Export converts distance to world
+metres and leaves thickness in mesh units, scaled by the exported node. Cycles
+and glTF use different absorption socket conventions; export temporarily converts
+them and restores the Cycles material. USD Preview Surface carries IOR and coat,
+approximates transmission by `opacity * (1 - transmission)` and carries no volume
+absorption, thickness or sheen. Fully transmitting water/glass can thus be invisible
+in USD. IFC carries surface colour and transparency `max(1-opacity, .85*transmission)`
+with GLASS reflectance; no IOR or volume absorption. OBJ carries vertex colour; URDF carries surface colour
+and opacity only; STL has no materials.
+
+Natural presets have average untextured colours: `bark` (outer wood), `leaf`
+(waxy foliage), `moss`, `grass`, `rock`, `soil`, `sand`, `water`, `snow`.
+All are nonmetallic with alpha 1; leaf has coat 0.12 and snow 0.03.
+`color=` changes the surface tint without changing absorption or other properties.
+Material names contain the preset and explicit overrides, not its default values.
 
 `scale` on a group or an assembly (its handle) takes one factor s > 0 — no (sx, sy, sz), no 0, no
 negative — and scales everything under it in place about the group's own origin: each mesh's
@@ -354,17 +393,6 @@ height above its Z=0 plane. A group uses its root frame; a list seats each item.
 `reach` bounds base-plane travel (None unbounded). Carrier tessellation uses local
 frames. It refuses self-seating and leaves vertex positions intact on reach failure.
 
-Natural material presets are average untextured surfaces: `bark` (outer wood),
-`leaf` (waxy foliage), `moss`, `grass`, `rock` (rough stone), `soil`, `sand`,
-`water` and `snow`. Short singular nouns match the existing material vocabulary;
-`leaf` distinguishes foliage from grass and moss. `color=` replaces their sRGB
-colour without changing their surface properties. All are nonmetallic and opaque
-(alpha 1); water transmits fully with roughness 0.08, leaf has coat 0.12 and snow
-has coat 0.03 (a small icy highlight). GLB carries transmission, coat and sheen through the corresponding
-KHR material extensions. USD Preview Surface carries coat, approximates
-transmission by opacity × (1 − transmission), and has no sheen. Water is a surface
-preset using the common Principled IOR, not a volume or absorption model.
-Material names contain the preset and explicit overrides, not its default values.
 
 For axisless surfaces, fixed `facets(n)` means target edge length `L = π D / n`,
 where D is the largest local bounding-box dimension (the requested box for field).

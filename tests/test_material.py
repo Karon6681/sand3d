@@ -276,5 +276,108 @@ import os; os._exit(0)
         self.assertEqual(*[[line for line in output.splitlines() if line.startswith(b'@@nature')] for output in outputs])
 
 
+class Absorption(unittest.TestCase):
+    def setUp(self):
+        s3d.empty_scene()
+
+    def test_beer_lambert_and_glb_units(self):
+        import math
+        for unit, metre in (("mm", 1000), ("cm", 100), ("m", 1)):
+            for mode in ("material", "vertex"):
+                s3d.empty_scene()
+                s3d.units(unit)
+                ob = s3d.material(s3d.box("pool", metre, metre, metre), "water")
+                mat = ob.data.materials[0]
+                node = mat.node_tree.nodes["Absorption"]
+                rgba = tuple(node.inputs["Color"].default_value)
+                density = node.inputs["Density"].default_value
+                tint = materials._linear("#b8e8ed")[:3]
+                for i, c in enumerate(tint):
+                    self.assertAlmostEqual(math.exp(-(1-rgba[i])*density*metre), c, places=6)
+                with tempfile.TemporaryDirectory() as tmp:
+                    path = Path(tmp) / "pool.glb"
+                    s3d.export(ob, path, colors=mode)
+                    doc = gltf(path)
+                ext = doc["materials"][0]["extensions"]
+                volume = ext["KHR_materials_volume"]
+                self.assertAlmostEqual(volume["attenuationDistance"], 1)
+                # Mesh coordinates remain in program units; the root scales to SI.
+                self.assertAlmostEqual(volume["thicknessFactor"], metre)
+                for a, b in zip(volume["attenuationColor"], tint):
+                    self.assertAlmostEqual(a, b)
+                self.assertAlmostEqual(ext["KHR_materials_ior"]["ior"], 1.333, places=5)
+                self.assertEqual(tuple(node.inputs["Color"].default_value), rgba)
+                self.assertEqual(node.inputs["Density"].default_value, density)
+
+    def test_overrides_disable_and_invalid_values(self):
+        ob = s3d.box("pane", 10, 10, 10)
+        s3d.material(ob, "glass", absorb="#aabbcc", absorb_distance=20, thickness=4,
+                     ior=1.4, transmission=.7)
+        doc, _ = export(ob)
+        ext = doc["materials"][0]["extensions"]
+        self.assertAlmostEqual(ext["KHR_materials_volume"]["attenuationDistance"], .02)
+        self.assertEqual(ext["KHR_materials_volume"]["thicknessFactor"], 4)
+        self.assertAlmostEqual(ext["KHR_materials_transmission"]["transmissionFactor"], .7)
+        for kw in ({"absorb_distance": 0}, {"thickness": 0}):
+            s3d.material(ob, "water", **kw)
+            self.assertNotIn("Absorption", ob.data.materials[0].node_tree.nodes)
+            doc, _ = export(ob)
+            self.assertNotIn("KHR_materials_volume", doc["materials"][0]["extensions"])
+        for key in ("absorb_distance", "thickness", "ior", "transmission"):
+            for value in (-1, True, float("nan"), float("inf"), "1"):
+                with self.subTest(key=key, value=value), self.assertRaises(ValueError):
+                    s3d.material(ob, "water", **{key: value})
+        for kw in ({"ior": .9}, {"ior": 1001}, {"transmission": 1.1}, {"absorb": "blue"}):
+            with self.assertRaises(ValueError):
+                s3d.material(ob, "water", **kw)
+
+    def test_failed_export_restores_cycles(self):
+        ob = s3d.material(s3d.box("pool", 10, 10, 10), "water")
+        node = ob.data.materials[0].node_tree.nodes["Absorption"]
+        color = tuple(node.inputs["Color"].default_value)
+        density = node.inputs["Density"].default_value
+        with self.assertRaises(RuntimeError):
+            with materials.volume_export():
+                raise RuntimeError("failed")
+        self.assertEqual(tuple(node.inputs["Color"].default_value), color)
+        self.assertEqual(node.inputs["Density"].default_value, density)
+
+
+    def test_volume_in_fresh_processes(self):
+        import subprocess
+        import sys
+        code = """import sand3d as s3d
+from sand3d import materials
+import json, tempfile, struct, pathlib, os
+s3d.empty_scene()
+ob=s3d.material(s3d.box('pane',10,10,10),'glass',absorb='#aabbcc',
+                absorb_distance=250,thickness=10,ior=1.4,transmission=.8)
+with tempfile.TemporaryDirectory() as tmp:
+ path=pathlib.Path(tmp)/'pane.glb'
+ s3d.export(ob,path)
+ raw=path.read_bytes(); n=struct.unpack('<I',raw[12:16])[0]
+ doc=json.loads(raw[20:20+n]); doc.pop('asset',None)
+ print('@@volume',json.dumps(doc,sort_keys=True),flush=True)
+os._exit(0)
+"""
+        outputs = [subprocess.run([sys.executable, '-c', code], check=True,
+                                 capture_output=True).stdout for _ in range(2)]
+        self.assertEqual(*[[line for line in output.splitlines() if line.startswith(b'@@volume')]
+                           for output in outputs])
+
+    def test_surface_only_formats(self):
+        ob = s3d.material(s3d.box("pool", 10, 10, 10), "water")
+        with tempfile.TemporaryDirectory() as tmp:
+            usd = Path(tmp) / "pool.usda"
+            ifc = Path(tmp) / "pool.ifc"
+            s3d.export(ob, usd)
+            s3d.export(ob, ifc)
+            self.assertIn("float inputs:ior = 1.333", usd.read_text())
+            self.assertIn("float inputs:opacity = 0", usd.read_text())
+            self.assertNotIn("absorption", usd.read_text().lower())
+            self.assertIn(".GLASS.", ifc.read_text())
+            self.assertNotIn("absorption", ifc.read_text().lower())
+
+
 if __name__ == "__main__":
     unittest.main()
