@@ -1031,13 +1031,28 @@ def scatter(n, size, seed=0, surface=False, on=None):
     return out
 
 
+def _ray(direction):
+    """A direction of `snap`: a named axis ("+Z", "-X", "Z"…) or a nonzero (x, y, z)."""
+    d = _DIRECTION.match(direction) if isinstance(direction, str) else None
+    if d:
+        v = Vector({"x": (1, 0, 0), "y": (0, 1, 0), "z": (0, 0, 1)}[d.group(2).lower()])
+        return -v if d.group(1) in ("-", "<") else v
+    if (isinstance(direction, (tuple, list, Vector)) and len(direction) == 3
+            and all(isinstance(c, (int, float)) and not isinstance(c, bool) and math.isfinite(c) for c in direction)
+            and Vector(direction).length > 0):
+        return Vector(direction).normalized()
+    raise ValueError(f'snap: direction is a named axis ("+Z", "-X"…), a nonzero (x, y, z) or None, '
+                     f'not {direction!r}')
+
+
 def snap(targets, points, direction=None):
     """On a surface.
 
     Frames on the surface of `targets` (one object or several), one per point or
     frame of `points`: at the nearest spot, or where a line from it running along
-    `direction` first meets the surface; each frame's normal points out of it. Points
-    a line misses are dropped."""
+    `direction` ("-Z", "+X"… or (x, y, z)) first meets the surface; each frame's normal
+    points out of it. Points a line misses are dropped."""
+    ray = None if direction is None else _ray(direction)
     size = _core.in_mm(1.0)   # Blender's BVH pads its boxes in its own units, which breaks ties: search in mm
     trees = [_core.mm_tree(ob, ob.matrix_basis) for ob in (targets if isinstance(targets, (list, tuple)) else [targets])]
     out = []
@@ -1047,7 +1062,6 @@ def snap(targets, points, direction=None):
             found = [t.find_nearest(p) for t in trees]
             loc, normal, _, _ = min((f for f in found if f[0] is not None), key=lambda f: f[3])
         else:
-            ray = Vector(direction).normalized()
             found = [f for f in (t.ray_cast(p, ray) for t in trees) if f[0] is not None]
             if not found:
                 continue
