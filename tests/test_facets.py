@@ -72,11 +72,19 @@ class Facets(unittest.TestCase):
         self.assertGreater(len(plate.data.polygons), auto)
 
     def test_set_after_the_first_verb(self):
-        s3d.box("b", 10, 10, 10)
-        with self.assertRaises(ValueError) as caught:
-            s3d.facets(8)
-        self.assertEqual(str(caught.exception), "facets: set 8 before the first verb — this scene is already "
-                                                "built with 'auto' (s3d.empty_scene() starts over)")
+        auto = s3d.cylinder("auto", 20, 10)
+        with s3d.facets(8):
+            low = s3d.cylinder("low", 20, 10)
+        self.assertEqual(s3d.facets(), "auto")
+        after = s3d.cylinder("after", 20, 10)
+        self.assertEqual(sides(low), 8)
+        self.assertEqual(len(after.data.polygons), len(auto.data.polygons))
+        s3d.facets(6)
+        self.assertEqual(sides(s3d.cylinder("six", 20, 10)), 6)
+        with s3d.facets("auto"):
+            again = s3d.cylinder("again", 20, 10)
+        self.assertEqual(len(again.data.polygons), len(auto.data.polygons))
+        self.assertEqual(s3d.facets(), 6)
 
     def test_the_same_value_again_is_no_change(self):
         s3d.facets(8)
@@ -167,7 +175,7 @@ class Facets(unittest.TestCase):
                 s3d.facets(10, smooth=option)
         s3d.facets(10)
         s3d.box("block", 10, 10, 10)
-        with self.assertRaisesRegex(ValueError, "before the first verb"):
+        with self.assertRaisesRegex(ValueError, "s3d.smooth"):
             s3d.facets(10, smooth=True)
 
     def test_auto_unchanged(self):
@@ -243,8 +251,7 @@ class Facets(unittest.TestCase):
         self.assertTrue(all(p.use_smooth for p in limb.data.polygons))
         with self.assertRaisesRegex(ValueError, 's3d.smooth'):
             s3d.facets(12, smooth=False)
-        with self.assertRaisesRegex(ValueError, 'before the first verb'):
-            s3d.facets('auto')
+        self.assertEqual(s3d.facets('auto'), 'auto')
 
     def test_first_shading_choice_is_kept_before_geometry(self):
         s3d.facets(16, smooth=True)

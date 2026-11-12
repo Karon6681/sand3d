@@ -112,7 +112,7 @@ branches(length, d, levels=3, children=3, attach=(0.45, 0.9), angle=45, azimuth=
 Frames.jitter(rx=0, ry=0, rz=0, x=0, y=0, z=0, seed=0)  # Random turns and moves along own axes, bounded and bell-shaped
 vary(value, spread, n, seed=0)  # Values within spread of value, most near it
 scatter(n, size, seed=0, surface=False, on=None)  # size: ellipsoid diameters, or a mesh part / list of mesh parts for its surface
-snap(targets, points, direction=None)  # On a surface
+snap(targets, points, direction=None)  # On a surface: nearest, or along direction "-Z", "+X"… or (x, y, z)
 # parts
 gear(name, teeth, module, width, bore=0, angle=20)  # Involute spur gear
 knurl(name, d, h, pitch=None, straight=False)  # Knurled grip; pitch 1 mm by default
@@ -130,7 +130,7 @@ attach(handle, name, *children)  # A detail, under a handle
 Handle(root, **anchors)  # Root and anchors
 export(root, path, colors="material")  # root and what hangs on it by its joints, in metres: .glb at the current pose, joints in extras; .urdf a link per moving part, at rest, meshes beside it; .usda the URDF's tree as OpenUSD text, with the materials; .ifc the part tree as IFC4 at the current pose, no joints; GlobalIds can change with geometry or placement and may repeat across models; .obj and .stl its meshes at the current pose
 empty_scene()  # Fresh scene
-facets(n=None, smooth=...)  # Read count, or set segments per turn (integer >=3 or "auto"); context manager restores previous count
+facets(n=None, smooth=...)  # Read count, or set segments per turn (integer >=3 or "auto") at any point; with facets(n): one part, then the previous count
 units(name=None)  # Length unit: "mm" (default), "cm", "m"
 fingerprint()  # Digest of the source
 ```

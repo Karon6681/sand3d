@@ -246,7 +246,8 @@ class _FacetAuto(str, _FacetScope):
 def facets(n=None, smooth=_FACET_DEFAULT):
     """Segments per full turn: a whole number from 3, or "auto".
 
-    Set how many straight pieces a full turn gets; fixed counts may change between makers:
+    Set how many straight pieces a full turn gets, at any point of a program, between "auto"
+    and fixed counts alike; `with facets(n):` sets it for one part and restores it after:
     `facets(8)` builds an octagonal cylinder and a quarter-round fillet in 2, for
     low-poly or faceted assets. A fixed count rules every turn, round a section and along
     a solid alike: a loft, a body or a wire gets about n × a / 360 pieces where it turns
@@ -272,11 +273,9 @@ def facets(n=None, smooth=_FACET_DEFAULT):
         value = n
     else:
         raise ValueError(f'facets: {n!r} is neither a whole number from 3 nor "auto"')
-    if (value is None) != (_core.FACETS is None) and _core.settled:
-        raise ValueError(f"facets: set {n!r} before the first verb — this scene is already built with "
-                         f"{facets()!r} (s3d.empty_scene() starts over)")
     if smooth != _core.FACET_SMOOTH and _core.FACET_CONFIGURED:
-        raise ValueError("facets: choose smooth at the first call, before the first verb; use s3d.smooth(ob) for one part")
+        raise ValueError(f"facets: this program shades fixed counts with smooth={_core.FACET_SMOOTH}, chosen by its "
+                         f"first facets call; leave smooth out to keep that, or shade one part with s3d.smooth(ob)")
     previous = (_core.FACETS, _core.FACET_SMOOTH, _core.FACET_CONFIGURED)
     _core.FACET_CONFIGURED = True
     _core.FACETS, _core.FACET_SMOOTH = value, smooth
