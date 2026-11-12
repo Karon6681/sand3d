@@ -91,7 +91,7 @@ LENGTHS = {
     "shell": {"ob": "-", "t": "L", "open": "-"},
     "dent": {"ob": "-", "points": "P", "r": "L", "depth": "L", "coords": "-"},
     "blend": {"ob": "-", "others": "-", "r": "L"},
-    "displace": {"ob": "-", "amount": "L", "size": "L", "noise": "-", "octaves": "-", "seed": "-", "direction": "-", "coords": "-",
+    "displace": {"ob": "-", "amount": "L", "size": "L", "noise": "-", "octaves": "-", "seed": "-", "direction": "-", "coords": "-", "faces": "-",
                  "fade": "P", "refine": "-"},
     # frames, placement
     "Frame": {"origin": "P", "normal": "-", "up": "-"},

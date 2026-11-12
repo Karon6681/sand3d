@@ -1804,7 +1804,7 @@ NOISES = ("perlin", "cells", "ridged", "turbulence")
 DISPLACE_FACES = 500_000
 
 
-def _refine(bm, size, name):
+def _refine(bm, size, name, selection=None):
     """Cut `bm` into triangles with no edge longer than about size / 4, in one pass: a
     surface whose every point has a vertex near it, whatever its faces were (a box's top is
     one face).
@@ -1817,7 +1817,8 @@ def _refine(bm, size, name):
     faces added follow the surface's area, not how the part was cut. Faces and edges keep
     their names; the new edges inside a face have none. Raises, before cutting anything,
     when the cuts would add more than `DISPLACE_FACES`."""
-    many = [f for f in bm.faces if len(f.verts) > 3]
+    chosen = [f for f in bm.faces if selection is None or f[selection]]
+    many = [f for f in chosen if len(f.verts) > 3]
     concave = [f for f in many if not _convex(f)]
     bmesh.ops.poke(bm, faces=[f for f in many if _convex(f)])
     _fill_concave(bm, concave)
@@ -1826,10 +1827,12 @@ def _refine(bm, size, name):
     bm.edges.index_update()
     cuts = {}
     for e in bm.edges:
+        if selection is not None and not any(f[selection] for f in e.link_faces):
+            continue
         length = e.calc_length()
         cuts[e] = max(1, math.ceil(length / longest)) if math.isfinite(length) else 1
     plans, added = [], 0
-    faces = list(bm.faces)
+    faces = [f for f in bm.faces if selection is None or f[selection]]
     for k, f in enumerate(faces):
         corners = list(f.verts)
         sides = [cuts[bm.edges.get((corners[i], corners[(i + 1) % len(corners)]))] for i in range(len(corners))]
@@ -1855,7 +1858,7 @@ def _refine(bm, size, name):
             v.co = [(p * (n - k) + q * k) / n for p, q in zip(start, stop)]
             edge = next(x for x in v.link_edges if x.other_vert(v) != here)
             here = v
-    slivers = [face for face, corners, inside in plans if not _fill(bm, face, corners, inside)]
+    slivers = [face for face, corners, inside in plans if not _fill(bm, face, corners, inside, interpolate=selection is not None)]
     if slivers:                         # one operator for all: each call walks the whole mesh
         bmesh.ops.triangulate(bm, faces=slivers, quad_method="BEAUTY", ngon_method="BEAUTY")
 
@@ -1884,7 +1887,7 @@ def _rows(corners, sides, longest):
     return rows
 
 
-def _fill(bm, face, corners, inside):
+def _fill(bm, face, corners, inside, interpolate=False):
     """Replace the triangle `face` — its sides already cut, `corners` its three corners — by
     triangles through its side points and the points `inside` it, by the constrained
     Delaunay triangulation caps use (in millimetres). False, the face left as it is, for a
@@ -1904,7 +1907,12 @@ def _fill(bm, face, corners, inside):
         tris = _triangles(flat, len(loop))
     if not tris:
         return False
-    verts = loop + [bm.verts.new(p) for p in inside]
+    verts = list(loop)
+    for p in inside:
+        v = bm.verts.new(p)
+        if interpolate:
+            v.copy_from_face_interp(face)
+        verts.append(v)
     for t in tris:
         bm.faces.new([verts[i] for i in t], face)
     bm.faces.remove(face)
@@ -2012,7 +2020,50 @@ def _path_coordinates(bm):
     return np.column_stack((data[:,0],np.degrees(np.arctan2(data[:,2],data[:,1])),np.hypot(data[:,1],data[:,2])))
 
 
-def displace(ob, amount, size, noise="perlin", octaves=1, seed=0, direction="normal", fade=None, *, coords="local", refine=True):
+def _displace_selection(ob, faces):
+    """Resolve construction names or the same directional patch as face()."""
+    from .frames import _facing
+    terms = [faces] if isinstance(faces, str) else faces
+    if not isinstance(terms, (list, tuple)) or not all(isinstance(t, str) for t in terms):
+        raise TypeError("displace: faces is a face name, direction, or list of names")
+    names = [t for t in terms if not _DIRECTION.match(t)]
+    picked = _named_faces(ob, names)
+    for term in terms:
+        if _DIRECTION.match(term):
+            patch = _facing(ob, term)
+            if not patch:
+                raise ValueError(f"displace: {_core.given_name(ob)!r} has no face facing {term}")
+            picked.update(p.index for p in patch)
+    return picked
+
+
+def _displace_border(bm, selection, size):
+    """Euclidean distance to the selected patch boundary, with zero slope at both ends.
+
+    Shared edges may gain vertices during refinement; none of their points move.
+    Process one segment at a time so memory stays linear in the vertex count.
+    """
+    vertices = list(bm.verts)
+    points = np.array([tuple(v.co) for v in vertices], dtype=np.float64)
+    distance2 = np.full(len(vertices), np.inf)
+    boundary = set()
+    for edge in bm.edges:
+        inside = sum(bool(f[selection]) for f in edge.link_faces)
+        if inside and (inside < len(edge.link_faces) or len(edge.link_faces) == 1):
+            boundary.update(edge.verts)
+            a, b = (np.array(v.co, dtype=np.float64) for v in edge.verts)
+            delta = b - a
+            length2 = delta @ delta
+            t = np.clip((points - a) @ delta / length2, 0, 1) if length2 else np.zeros(len(points))
+            offsets = points - (a + t[:, None] * delta)
+            distance2 = np.minimum(distance2, np.sum(offsets * offsets, axis=1))
+    t = np.minimum(np.sqrt(distance2) / size, 1)
+    weights = t * t * (3 - 2 * t)
+    return {v: float(w) if v not in boundary and any(f[selection] for f in v.link_faces) else 0.0
+            for v, w in zip(vertices, weights)}
+
+
+def displace(ob, amount, size, noise="perlin", octaves=1, seed=0, direction="normal", fade=None, *, faces=None, coords="local", refine=True):
     """Push the surface out and in by up to amount, features size across: noise perlin cells ridged
     turbulence or a callable; direction normal, radial or "+Z"…; fade along own Z.
 
@@ -2056,7 +2107,11 @@ def displace(ob, amount, size, noise="perlin", octaves=1, seed=0, direction="nor
     frames a part needs (`ob.face("top")`) before displacing it.
     Fixed facets(n) bounds refinement by π D / n, D the largest local box dimension;
     existing fine edges remain. Auto refinement is unchanged.
-    refine=False moves existing vertices only, retaining their order and attributes."""
+    refine=False moves existing vertices only, retaining their order and attributes.
+    faces=None keeps the whole-surface behavior. A name, list of names or face()
+    direction restricts displacement and refinement to those faces. Their boundary
+    stays fixed, with a smoothstep transition over size in local Euclidean distance.
+    Shared edges gain collinear vertices, but unselected faces are not triangulated."""
     if not isinstance(refine, bool):
         raise TypeError("displace: refine is True or False")
     _solids("displace", ob)
@@ -2088,8 +2143,16 @@ def displace(ob, amount, size, noise="perlin", octaves=1, seed=0, direction="nor
             raise ValueError(f"displace: fade runs between two finite heights, not {fade[0]:g} and {fade[1]:g}")
         if fade[0] == fade[1]:
             raise ValueError(f"displace: fade runs between two different heights, not {fade[0]:g} and {fade[1]:g}")
+    picked = _displace_selection(ob, faces) if faces is not None else None
+    if picked == set():
+        return ob
     bm = bmesh.new()
     bm.from_mesh(ob.data)
+    selection = None
+    if picked is not None:
+        selection = bm.faces.layers.int.new(".displace_selection")
+        for f in bm.faces:
+            f[selection] = int(f.index in picked)
     try:
         if refine:
             refinement_size = size
@@ -2097,11 +2160,14 @@ def displace(ob, amount, size, noise="perlin", octaves=1, seed=0, direction="nor
                 extent = _span([c for v in bm.verts for c in v.co])
                 target = _core.surface_edge([hi-lo for lo, hi in zip(*extent)])
                 refinement_size = max(size, 4 * target)
-            _refine(bm, refinement_size, _core.given_name(ob))
+            _refine(bm, refinement_size, _core.given_name(ob), selection)
     except ValueError:
         bm.free()
         raise
     bm.normal_update()
+    border = _displace_border(bm, selection, size) if selection is not None else None
+    if selection is not None:
+        bm.faces.layers.int.remove(selection)
     values = None
     if custom:
         try:
@@ -2130,6 +2196,8 @@ def displace(ob, amount, size, noise="perlin", octaves=1, seed=0, direction="nor
     samples = []
     for i, v in enumerate(bm.verts):
         w = weight(v.co.z)
+        if border is not None:
+            w *= border[v]
         if w and amount:
             area = 0.0 if custom else sum(f.calc_area() / len(f.verts) for f in v.link_faces)
             samples.append((v, w, area, float(values[i]) if custom else field(v.co / size)))

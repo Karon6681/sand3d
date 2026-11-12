@@ -90,7 +90,7 @@ soften(ob, r, angle=30)  # Round all sharp edges
 shell(ob, t, open=None)  # Hollow; open named faces, or the flat faces looking "+Y", "-X +X"
 dent(ob, points, r, depth, *, coords="local")  # Press hollows at points in the mesh's local space; parent: the space the part is in
 blend(ob, *others, r)  # Fuse others in, creases filled to about radius r on voxels of r / 5; its faces are all blend
-displace(ob, amount, size, noise='perlin', octaves=1, seed=0, direction='normal', fade=None, *, coords='local', refine=True)  # Push the surface out and in by up to amount, features size across: noise callable or perlin cells ridged turbulence; direction normal, radial or "+Z"…; fade=(z0, z1) along its own Z
+displace(ob, amount, size, noise='perlin', octaves=1, seed=0, direction='normal', fade=None, *, faces=None, coords='local', refine=True)  # Push the surface out and in by up to amount, features size across: noise callable or perlin cells ridged turbulence; direction normal, radial or "+Z"…; fade=(z0, z1) along its own Z
 bend(ob, angle, axis="+Y", toward="+Z")  # Curl along its own axis toward a perpendicular direction; degrees, groups bend together
 twist(ob, angle, axis="+Y")  # Turn sections about its own axis, right handed; near end fixed, far end turned angle degrees
 taper(ob, s, axis="+Y")  # Scale across its own axis, from 1 at the near end to ratio s > 0 at the far end
@@ -379,6 +379,22 @@ directly, without the named noises' area centring. Size still controls surface
 refinement (about size / 4); coordinates are not divided by size. Keep octaves=1
 and seed=0; compose seeded `s3d.noise` calls inside f for layers and domain warps.
 
+`faces=None` preserves whole-surface displacement. Use `faces="top"` or a list
+of construction face names to displace only their vertices; names select all
+facets carrying that label, including curved surfaces. A direction such as
+`faces="+Z"` selects exactly the patch that `face(ob, "+Z")` reads (in the
+parent's space, before refinement). Unknown names list the available labels.
+Vertices shared with unselected faces stay fixed. Displacement multiplies fade
+by a cubic smoothstep of distance to the selection boundary, reaching full
+strength at distance `size`, with zero slope at either end. Distance is local
+Euclidean distance to boundary segments, not distance along a folded surface.
+Open patch edges are held too; a selection without a boundary has no attenuation.
+Only selected faces are refined. Shared edges gain collinear vertices to keep
+the mesh closed, but unselected faces are not triangulated. `refine=False`
+keeps existing topology. A coarse patch with no interior vertices cannot move.
+This holds a panel's rim, a relief's frame or a liquid's shore; it does not
+preserve thickness or prevent intersections at large amplitudes.
+
 With `coords="path"`, f receives construction (s, a, r): arc length in program
 units, transported angle in degrees [-180,180], and construction radius. Constructors
 write one POINT source: `.s3d_s`, `.s3d_x`, `.s3d_y`, `.s3d_extent`.
@@ -472,6 +488,9 @@ the bottom up to the free surface. That surface is the face `top` (also its
 boundary edges): `face(water, "top")` reads it, `at(water, ..., anchor="+Z")`
 places by it; other faces are `side`. On a tilted level, local X and Y lie in
 the surface, so a `waves` field or `displace(direction="+Z")` follows it. Multiple pockets share one object.
+For waves on the surface alone, use
+`displace(water, 2, 20, noise=waves(100), direction="+Z", faces="top")`:
+the shore and submerged faces stay fixed.
 Closed cavities are included, even without a free surface. Container parts must
 be closed manifold solids; an open cup means an opening between solid walls,
 not a mesh with missing faces.
