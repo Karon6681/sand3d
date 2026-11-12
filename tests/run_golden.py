@@ -34,7 +34,7 @@ PROGRAMS = {"programs/weight_stack.py": ["weight_stack"], "programs/tufted_chair
             "programs/cutlery.py": ["spoon", "fork"], "programs/washing_machine.py": ["washer", "washer_open"],
             "docs/examples/bracket.py": ["bracket"], "docs/examples/curved_stem.py": ["curved_stem"], "docs/examples/lamp.py": ["lamp"], "docs/examples/rack.py": ["rack"],
             "docs/examples/chair.py": ["chair"], "docs/examples/gate.py": ["gate"],
-            "docs/examples/pond.py": ["pond"]}
+            "docs/examples/pond.py": ["pond"], "docs/examples/stony_ground.py": ["stony_ground"]}
 
 
 def golden_path():
