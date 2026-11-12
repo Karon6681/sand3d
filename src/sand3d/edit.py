@@ -15,6 +15,7 @@ coplanar faces loses its names.
 """
 import bisect
 import math
+import numbers
 import random
 import warnings
 from copy import deepcopy
@@ -1413,15 +1414,130 @@ def _concat(meshes):
 
 
 def scale(ob, s):
-    """About its origin.
+    """About its origin; a group or an assembly whole, by one factor s > 0.
 
-    `ob`'s mesh scaled about its own origin: one factor, or (sx, sy, sz)."""
+    `ob`'s mesh scaled about its own origin: one factor, or (sx, sy, sz). A group or an
+    assembly (its handle) scales whole about its own origin, in place, by one factor
+    `s` > 0: every point under it goes from p to s·p of its space — each mesh, and
+    where each part sits — while it stays where it is in its parent, its parts keep
+    their turns, materials, shading and faces, and a later `at` on a part keeps the
+    scaled place. Frames and anchors already read — a handle's included, numbers as
+    they are — do not follow: read `bbox`, faces and `local` again, or rebuild the
+    anchors, after scaling. Not on a group with joints in it, on it or across it."""
+    from .assembly import Handle
+    if isinstance(ob, Handle) or isinstance(ob, bpy.types.Object) and ob.type == "EMPTY":
+        _scale_tree(ob, s)
+        return ob
     _solids("scale", ob)
     sx, sy, sz = (s, s, s) if isinstance(s, (int, float)) else s
     ob.data.transform(Matrix.Diagonal((sx, sy, sz, 1)))
     if sx * sy * sz < 0:
         ob.data.flip_normals()
     return ob
+
+
+def _group_factor(s, name):
+    """The one factor a group scales by, or what to write instead."""
+    if isinstance(s, bool) or not isinstance(s, numbers.Real) and not isinstance(s, (list, tuple, Vector)):
+        raise TypeError(f"scale: {name!r} is a group: it scales by one number s > 0, not {s!r}")
+    if not isinstance(s, numbers.Real):
+        raise ValueError(f"scale: {name!r} is a group: it scales by one factor, not {tuple(s)} — a different factor "
+                         f"per axis would shear its turned parts. Scale each solid with s3d.scale(part, (sx, sy, sz)), "
+                         f"or give the size to the function that builds the group")
+    s = float(s)
+    if not math.isfinite(s):
+        raise ValueError(f"scale: {name!r} scales by a finite number, not {s}")
+    if s == 0:
+        raise ValueError(f"scale: {name!r} scaled by 0 would shrink to a point: give a factor s > 0, or s3d.delete it")
+    if s < 0:
+        raise ValueError(f"scale: {name!r} is a group: it scales by s > 0, not {s:g} — a mirror image is "
+                         f"s3d.transform({_guard._code(name)}, mirror=\"xyz\") then s3d.scale({_guard._code(name)}, {-s:g})")
+    return s
+
+
+def _scale_refusal(root, tree):
+    """Why the tree under `root` cannot scale, joint-wise, or None. The kinematic tree is
+    apart from the scene's: what hangs on, or follows, a part of the group is checked over
+    the whole scene."""
+    from . import joints
+    name = _core.given_name(root)
+    for o in tree:
+        found = joints.joints_of(o)
+        if found:
+            return (f"scale: {_core.given_name(o)!r} moves by its joint {found[0]['name']!r}: scaling {name!r} would "
+                    f"move its pivot and its range with it — scale {name!r} before declaring its joints, or build it "
+                    f"at its size")
+        if o.type not in ("MESH", "EMPTY"):
+            return f"scale: {_core.given_name(o)!r} under {name!r} is a {o.type.lower()} object, not a solid or a group"
+    carrier = joints.body(root.parent)
+    if carrier is not None:
+        return (f"scale: {name!r} is carried by {_core.given_name(carrier)!r}, which moves by its joint "
+                f"{joints.joints_of(carrier)[0]['name']!r}: scale {name!r} before it goes into the mechanism, or "
+                f"build it at its size")
+    inside = {o.as_pointer() for o in tree}
+    for o in joints.everything():
+        if o.as_pointer() in inside:
+            continue
+        held = [(k, o[k]) for k in o.keys() if k == joints.PARENT or k.startswith(joints.FOLLOWS)]
+        for key, other in held:
+            if other is not None and not _guard.removed(other) and other.as_pointer() in inside:
+                how = "hangs on" if key == joints.PARENT else "follows"
+                return (f"scale: {_core.given_name(o)!r} {how} {_core.given_name(other)!r}, inside {name!r}, by its "
+                        f"joint {joints.joints_of(o)[0]['name']!r}: scaling {name!r} would move the pivot out from "
+                        f"under it — scale {name!r} before declaring that joint, or build it at its size")
+    return None
+
+
+def _scale_tree(ob, s):
+    """`scale` on a group or a handle: a uniform similarity about the root's origin, baked.
+    Each mesh's own coordinates are multiplied by s; under the root, each placement's
+    translation — and its parent inverse's — too, which is the placement conjugated by
+    the scale: turns, and any scale Blender holds, stay. The root keeps its placement.
+    What `at` remembers of each part is conjugated the same way, so a later `at` keeps
+    the scaled place. Everything is checked before anything changes."""
+    from . import joints
+    from .assembly import Handle
+    from .frames import PLACE, _recalled, _remember
+    root = ob.root if isinstance(ob, Handle) else ob
+    if not isinstance(root, bpy.types.Object):
+        raise TypeError(f"scale: a handle's root is an object, not {type(root).__name__}")
+    name = _core.given_name(root)
+    s = _group_factor(s, name)
+    children = _children() if root.children else {}
+    tree = [root]
+    for o in tree:
+        tree += children.get(o, [])
+    refusal = _scale_refusal(root, tree)
+    if refusal:
+        raise ValueError(refusal)
+
+    inside = {o.as_pointer() for o in tree}
+    outside = {u.data.as_pointer() for u in bpy.data.objects
+               if u.type == "MESH" and u.as_pointer() not in inside}
+    meshes = {}
+    for o in tree:
+        if o.type != "MESH":
+            continue
+        if o.data.as_pointer() in outside:
+            o.data = o.data.copy()            # a mesh shared with a part outside: this one gets its own
+        meshes.setdefault(o.data.as_pointer(), o.data)
+    kept = {o: _recalled(o) for o in tree[1:] if o.get(PLACE) is not None}   # before the placements change
+    for o in tree[1:]:
+        o.location = o.location * s
+        o.delta_location = o.delta_location * s
+        inverse = Matrix(o.matrix_parent_inverse)
+        inverse.translation = inverse.translation * s
+        o.matrix_parent_inverse = inverse
+    for o, (frame, values, anchor, point) in kept.items():
+        if frame is not None:
+            frame = Matrix(frame)
+            frame.translation = frame.translation * s
+        values = {k: v * s if k in ("x", "y", "z") else v for k, v in values.items()}
+        _remember(o, frame, values, anchor, point * s)
+    for me in meshes.values():
+        me.transform(Matrix.Scale(s, 4))
+        me.update()
+    joints.placed_again(root)                 # a part placed on a frame read on a part sits there as scaled
 
 
 # ---------------------------------------------------------------- upholstery

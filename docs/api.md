@@ -81,7 +81,7 @@ copy(ob)  # An independent copy, its joints with it; a list, the list of copies
 hole(ob, d, on=(0, 0), depth=None, cbore=None, csk=None)  # On frames or points: through, or depth deep
 pocket(ob, profile, depth=None, on=None)  # Profile cut in from a face
 merge(*obs)  # No boolean
-scale(ob, s)  # About its origin
+scale(ob, s)  # About its origin; a group or an assembly whole, by one factor s > 0 — frames and anchors read before stay where they were
 fillet(ob, r, edges='all')  # Round named edges
 chamfer(ob, d, edges='all', d2=None, angle=None)  # Bevel named edges
 soften(ob, r, angle=30)  # Round all sharp edges
@@ -134,6 +134,17 @@ facets(n=None, smooth=...)  # Read count, or set segments per turn (integer >=3 
 units(name=None)  # Length unit: "mm" (default), "cm", "m"
 fingerprint()  # Digest of the source
 ```
+
+`scale` on a group or an assembly (its handle) takes one factor s > 0 — no (sx, sy, sz), no 0, no
+negative — and scales everything under it in place about the group's own origin: each mesh's
+coordinates and each part's place in its parent are multiplied by s; the group stays where it is in its
+parent, turns, materials, `smooth`, vertex and face counts are kept, and no scale is left on any object.
+A later `at` on a part keeps its scaled place; new lengths given to it are in program units. **Frames,
+`Frames` and a handle's anchors read before the call do not follow**, and number anchors stay as they
+were: read `bbox`, faces and `local` again, or rebuild the anchors from scaled parameters, after scaling.
+Refused for now: a group holding a jointed part, carried by one, or that a joint outside hangs on or
+follows — scale before declaring joints, or build at size. A solid keeps its own `scale`, per axis
+included; its children do not move.
 
 Laws are lists of `(u, value)` pairs, strictly increasing from 0 to 1, measured by path
 length. Values interpolate with shape-preserving monotone cubics; sweep scale also accepts
