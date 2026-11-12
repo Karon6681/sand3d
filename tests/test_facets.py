@@ -86,6 +86,15 @@ class Facets(unittest.TestCase):
         self.assertEqual(len(again.data.polygons), len(auto.data.polygons))
         self.assertEqual(s3d.facets(), 6)
 
+    def test_a_facets_block_flattens_only_what_it_builds(self):
+        before = s3d.cylinder("before", 20, 10)
+        with s3d.facets(8):
+            low = s3d.cylinder("low", 20, 10)
+        after = s3d.cylinder("after", 20, 10)
+        self.assertTrue(all(p.use_smooth for p in before.data.polygons))
+        self.assertFalse(any(p.use_smooth for p in low.data.polygons))
+        self.assertTrue(all(p.use_smooth for p in after.data.polygons))
+
     def test_the_same_value_again_is_no_change(self):
         s3d.facets(8)
         s3d.box("b", 10, 10, 10)
