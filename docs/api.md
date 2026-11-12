@@ -390,9 +390,13 @@ already refine by total angle. Auto sampling, refinement and shading are unchang
 height 80, preserving the container. A part, group or assembly supplies its own
 height frame; a list of parts requires a `Frame`, for example
 `fill("river", channel, local(channel, z=12, ry=3))`. The frame's normal points
-out of the fill; an unbound Frame is in world space. The result is placed in
-that plane's frame, with the free surface at local Z=0, named `top` (also its
-boundary edges); other faces are `side`. Multiple pockets share one object.
+out of the fill; an unbound Frame is in world space. The result takes that
+plane's axes and, like every solid, stands on its own Z=0: its origin is under
+the level's origin at the depth of the deepest point, so its local Z runs from
+the bottom up to the free surface. That surface is the face `top` (also its
+boundary edges): `face(water, "top")` reads it, `at(water, ..., anchor="+Z")`
+places by it; other faces are `side`. On a tilted level, local X and Y lie in
+the surface, so a `waves` field or `displace(direction="+Z")` follows it. Multiple pockets share one object.
 Closed cavities are included, even without a free surface. Container parts must
 be closed manifold solids; an open cup means an opening between solid walls,
 not a mesh with missing faces.

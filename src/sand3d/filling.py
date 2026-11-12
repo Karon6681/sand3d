@@ -5,7 +5,7 @@ import math
 import bpy
 import bmesh
 import numpy as np
-from mathutils import Vector
+from mathutils import Matrix, Vector
 from mathutils.bvhtree import BVHTree
 
 from . import _core
@@ -17,7 +17,8 @@ def fill(name, container, level, clearance=None):
     """Make the bounded voids below level; negative clearance overlaps the walls.
 
     A numeric level is local to a single container root. A Frame is a plane,
-    with its normal pointing out of the fill. Containers are preserved.
+    with its normal pointing out of the fill. The result takes the plane's axes
+    and stands on its own Z = 0; its face "top" is the level. Containers are preserved.
     None means -0.04 mm; explicit clearance is in the program's unit.
     """
     if clearance is None:
@@ -162,11 +163,16 @@ def fill(name, container, level, clearance=None):
                 if label.startswith(prefix):
                     domain.layers.bool.remove(domain.layers.bool[label])
         _core.write_tags(bm, name, face_tags, edge_tags)
+        # Like every solid, it stands on its own Z = 0: the origin is the deepest
+        # point's depth under the level's origin, the free surface its top.
+        depth = -min(v.co.z for v in bm.verts)
+        for v in bm.verts:
+            v.co.z += depth
         mesh = bpy.data.meshes.new(name)
         bm.to_mesh(mesh)
         ob = _core.link(bpy.data.objects.new(name, mesh))
         ob[_core.NAME] = name
-        ob.matrix_basis = matrix
+        ob.matrix_basis = matrix @ Matrix.Translation((0, 0, -depth))
         return ob
     finally:
         if bm is not None:

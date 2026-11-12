@@ -5,6 +5,7 @@ import bpy
 import bmesh
 import numpy as np
 import sand3d as s3d
+from mathutils import Matrix
 from sand3d import _core
 
 
@@ -115,9 +116,14 @@ class Fill(unittest.TestCase):
         water = s3d.fill("river", channel, f, 0)
         self.closed(water)
         expected = _core.world(channel) @ f._in_part()
-        for v in water.data.vertices:
-            self.assertLessEqual(v.co.z, 1e-4)
-        self.assertLess((_core.world(water).translation - expected.translation).length, 1e-4)
+        heights = [v.co.z for v in water.data.vertices]
+        self.assertAlmostEqual(min(heights), 0, places=4)  # it stands on its own Z = 0
+        surface = _core.world(water) @ Matrix.Translation((0, 0, max(heights)))
+        self.assertLess((surface.translation - expected.translation).length, 1e-4)
+        for got, want in zip(surface.to_3x3(), expected.to_3x3()):
+            self.assertLess((got - want).length, 1e-6)
+        top = water.face("top")
+        self.assertLess((top.matrix.col[2].xyz - expected.col[2].xyz).length, 1e-6)
 
     def test_other_materials(self):
         for name, kind in (("pot", "soil"), ("tray", "sand"), ("form", "concrete")):
