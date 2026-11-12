@@ -53,6 +53,7 @@ wrap(*profiles)  # Convex outline round profiles
 mirror(p, flip='x')  # Plus its image, flip negated
 # solids, paths
 field(name, size, density, *, cell, level=0, min_component_cells=3)  # Closed isosurface: density(x,y,z) < level; size=(w,d,h), local coordinates, centred XY, Z=0..h; faces field
+waves(wavelength, direction=None, centers=None, sharpness=0, spread=0, decay=None, phase=0, seed=0)  # Factory: bounded scalar/array f(x,y,z), local XY; lengths in program units, angles in degrees
 noise(x, y, z, seed=0, kind="perlin")  # Dimensionless scalar or broadcast arrays [-1,1]; perlin cells ridged turbulence; independent of displace
 hull(name, points)  # Closed convex hull where points are given, no recentering; (x, y, z) or Frame origins; at least 4 distinct non-coplanar points, finite coordinates; unnamed planar faces (read by direction), edges rim
 extrude(name, profile, h=None, taper=0, twist=0, both=False, h2=None, on=None, until=None)  # Prism up Z (taper > 0 narrows it upward), or until a plane or solid; on a face, by on
@@ -282,6 +283,49 @@ every axis; always keeps the largest. Set 0 to keep all components.
 array, in [-1,1]. Seeded gradient/nearest-cell noise is deterministic
 across runs and platforms; independent of `displace`'s existing realization.
 Coordinates must be finite with magnitude <= 2**50. Programs may import numpy.
+
+
+`waves` returns a deterministic `f(x,y,z)` in [-1,1]: float for scalars,
+float64 ndarray for broadcast arrays, independent of Z. Default direction is
+"+X"; degrees turn counterclockwise from +X toward +Y. Signed XY axes are also
+accepted. Direction is the phase-gradient direction; crests run perpendicular.
+`wavelength` is positive, measured along that direction, in program units.
+`phase` is in degrees (0 gives a crest at the origin); changing it shifts the
+pattern. `sharpness` in [0,1] changes cos(t) to cos(t + sharpness*sin(t)):
+narrower crests, broader flatter troughs, with unchanged period and bounds.
+This is a height profile inspired by trochoids, not a fluid simulation; it can
+have a negative mean. No horizontal motion, overturning or breaking waves.
+
+`spread` in [0,90] degrees is the half-angle of four seeded components around
+the primary direction, with wavelengths 0.85..1.15 times the requested length
+and random phases. The primary carries half the weight, each satellite 1/8;
+zero spread is one exact cosine and ignores seed. `centers=[(x,y), ...]` selects
+circular waves instead, excluding direction and nonzero spread. Sources share
+wavelength, sharpness and phase. Optional positive `decay` is an e-folding
+length: each source is multiplied by its envelope exp(-distance/decay), and the
+sum is divided by the summed envelopes where they exceed 1, so a ring far from
+the others keeps its full height and overlaps stay in [-1,1]. Without decay the
+sources are averaged. It requires centers.
+Seed affects spread only. Inputs must be finite; distance / wavelength must
+have magnitude <= 2**50. `waves` creates no mesh and stores no animation state.
+
+Use `f = waves(3000, direction=25, sharpness=.8, spread=15, seed=7)` then
+`displace(ob, 200, 500, noise=f, direction="+Z")`. Size controls refinement,
+not wavelength: resolve the shortest component with at least 16 samples per
+period, more for sharp crests. Use a fixed push direction for a height surface;
+normal displacement on an already curved mesh does not guarantee no crossings.
+For foam colouring, wrap the scalar field in an RGB colour function:
+`material(ob, "plastic", color=lambda x,y,z: (1,1,1) if f(x,y,z) > .7 else (.02,.15,.2))`.
+This colours crests; it does not model foam. Colour callbacks still run per face.
+
+A shore belongs to composition, not radial decay: multiply `f(x,y,z)` by a
+bounded mask such as `np.clip((x-shore)/width, 0, 1)` (positive width).
+Multiply by `(.7 + .3*s3d.noise(x/500,y/500,z/500))` for bounded modulation;
+use `np.clip(f(x,y,z)+.2*g(x,y,z), -1, 1)` for a bounded sum.
+The same field describes sand ripples (`waves(80, direction=20, sharpness=.7)`),
+dunes (`waves(8000, direction=15, spread=20, sharpness=.6, seed=3)`) and
+corrugated sheet (`waves(75, direction="+X")`), each displaced along "+Z" with
+an appropriate amplitude. These are surface heights, not thickness-preserving bends.
 
 
 Callable displacement: `displace(ob, amount, size, noise=f, coords="local")`
