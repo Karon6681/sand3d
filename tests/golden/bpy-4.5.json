@@ -1,5 +1,5 @@
 {
- "bpy": "4.5.15 LTS",
+ "bpy": "4.5.16 LTS",
  "digests": {
   "case:profile_shapes": "f7ec6b11db40c9d6",
   "case:stations": "5e4438297c70327f",
@@ -63,6 +63,7 @@
   "case:surface_scatter": "bf605f9018abd9c5",
   "case:implicit_solid": "8277d78dd0cf19b5",
   "case:surface_details": "295fbb8c7af6c31d",
+  "case:wave_surfaces": "88d8da9bc6d75826",
   "program:weight_stack.weight_stack": "c47479f9c8875e3c",
   "program:tufted_chair.tufted_chair": "ecdfaf895171a615",
   "program:cutlery.spoon": "11febab11b1d4994",

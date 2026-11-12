@@ -49,6 +49,8 @@ LENGTHS = {
     "mirror": {"p": "-", "flip": "-"},
     # solids, paths
     "field": {"name": "-", "size": "P", "density": "density", "cell": "L", "level": "-", "min_component_cells": "-"},
+    "waves": {"wavelength": "L", "direction": "-", "centers": "P", "sharpness": "-",
+              "spread": "-", "decay": "L", "phase": "-", "seed": "-"},
     "noise": {"x": "-", "y": "-", "z": "-", "seed": "-", "kind": "-"},
     "hull": {"name": "-", "points": "P"},
     "extrude": {"name": "-", "profile": "P", "h": "L", "taper": "-", "twist": "-", "both": "-", "h2": "L",

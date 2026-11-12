@@ -75,6 +75,108 @@ def noise(x, y, z, seed=0, kind="perlin"):
     return float(result) if result.ndim == 0 else result
 
 
+def waves(wavelength, direction=None, centers=None, sharpness=0, spread=0,
+          decay=None, phase=0, seed=0):
+    """Return a bounded scalar/array height field in local XY, in program units.
+
+    Direction and phase are degrees. Spread is a half-angle in degrees (0..90).
+    Sharpness (0..1) phase-warps a cosine: narrow crests and broad troughs,
+    without horizontal motion. Circular sources are averaged, never summed.
+    Decay is the positive e-folding distance from each source, not a shore mask.
+    """
+    def number(name, value):
+        if isinstance(value, (bool, str, bytes)):
+            raise ValueError(f"waves: {name} must be a finite number")
+        try:
+            value = float(value)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError(f"waves: {name} must be a finite number") from exc
+        if not math.isfinite(value):
+            raise ValueError(f"waves: {name} must be a finite number")
+        return value
+
+    wavelength = number("wavelength", wavelength)
+    sharpness = number("sharpness", sharpness)
+    spread = number("spread", spread)
+    phase = math.radians(number("phase", phase) % 360)
+    if wavelength <= 0:
+        raise ValueError("waves: wavelength must be positive")
+    if not 0 <= sharpness <= 1:
+        raise ValueError("waves: sharpness must lie in [0, 1]")
+    if not 0 <= spread <= 90:
+        raise ValueError("waves: spread must lie in [0, 90] degrees")
+    if not isinstance(seed, int) or isinstance(seed, bool):
+        raise ValueError("waves: seed must be an integer")
+    if centers is not None:
+        if direction is not None or spread != 0:
+            raise ValueError("waves: centers exclude direction and spread")
+        try:
+            sources = tuple(tuple(number("centers", v) for v in p) for p in centers)
+        except TypeError as exc:
+            raise ValueError("waves: centers must be nonempty (x, y) pairs") from exc
+        if not sources or any(len(p) != 2 for p in sources):
+            raise ValueError("waves: centers must be nonempty (x, y) pairs")
+    else:
+        sources = None
+        if decay is not None:
+            raise ValueError("waves: decay requires centers")
+        if direction is None:
+            direction = "+X"
+        if isinstance(direction, str):
+            if direction not in ("+X", "-X", "+Y", "-Y"):
+                raise ValueError("waves: direction must be degrees or +X, -X, +Y, -Y")
+            direction = {"+X": 0, "+Y": 90, "-X": 180, "-Y": 270}[direction]
+        angle = math.radians(number("direction", direction) % 360)
+    if decay is not None:
+        decay = number("decay", decay)
+        if decay <= 0:
+            raise ValueError("waves: decay must be positive")
+
+    # A fixed primary wave retains the requested scale; four seeded satellites
+    # carry half the weight. Local RNG leaves the program's random state alone.
+    components = []
+    if sources is None:
+        components = [(math.cos(angle), math.sin(angle), 1.0, 0.0, 1.0)]
+        if spread:
+            import random
+            rng = random.Random(seed)
+            components[0] = (*components[0][:4], 0.5)
+            for _ in range(4):
+                a = angle + math.radians(rng.uniform(-spread, spread))
+                components.append((math.cos(a), math.sin(a),
+                                   rng.uniform(0.85, 1.15), rng.uniform(-math.pi, math.pi), 0.125))
+
+    def evaluate(x, y, z):
+        q = np.broadcast_arrays(*[np.asarray(a, dtype=np.float64) for a in (x, y, z)])
+        if any(not np.all(np.isfinite(a)) for a in q):
+            raise ValueError("waves: coordinates must be finite")
+        x, y, _ = q
+
+        def profile(distance, ratio=1.0, offset=0.0):
+            with np.errstate(over="ignore", invalid="ignore"):
+                cycles = (distance / wavelength) / ratio
+            if not np.all(np.isfinite(cycles)) or np.any(np.abs(cycles) > 2**50):
+                raise ValueError("waves: distance / wavelength must be finite and within 2**50")
+            t = 2 * math.pi * np.remainder(cycles, 1) + phase + offset
+            return np.cos(t + sharpness * np.sin(t))
+
+        result = np.zeros(x.shape, dtype=np.float64)
+        if sources is None:
+            for dx, dy, ratio, offset, weight in components:
+                result += weight * profile(x * dx + y * dy, ratio, offset)
+        else:
+            for cx, cy in sources:
+                distance = np.hypot(x - cx, y - cy)
+                value = profile(distance)
+                if decay is not None:
+                    value *= np.exp(-distance / decay)
+                result += value / len(sources)
+        result = np.clip(result, -1, 1)
+        return float(result) if result.ndim == 0 else result
+
+    return evaluate
+
+
 DENSE_SAMPLES = 1_000_000
 MAX_COARSE_SAMPLES = 1_000_000
 MAX_SAMPLES = 8_000_000

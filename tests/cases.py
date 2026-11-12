@@ -697,3 +697,13 @@ def surface_details():
     petal = s3d.loft('petal',s3d.station(0,4,2),s3d.station(12,8,2),s3d.station(20,0,0),tip='sharp',rings=2)
     s3d.material(petal,'plastic',color=lambda x,y,z,n,u: (u,0,1-u))
     return support,patch,petal
+
+
+@case("waves")
+def wave_surfaces():
+    ob = s3d.box("waves", 12, 10, 1)
+    s3d.displace(ob, .3, 2, direction="+Z",
+                 noise=s3d.waves(4, direction=25, spread=18, sharpness=.7, seed=19))
+    s3d.displace(ob, .1, 2, direction="+Z",
+                 noise=s3d.waves(2, centers=[(-2, 0), (2, 1)], decay=4))
+    return ob
