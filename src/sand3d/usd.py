@@ -180,6 +180,9 @@ def _look(out, path, tag):
     out(f"float inputs:roughness = {_num(v['roughness'])}")
     out(f"float inputs:metallic = {_num(v['metallic'])}")
     out(f"float inputs:opacity = {_num(v['opacity'] * (1 - v['transmission']))}")
+    if v["ior"] != 1.5:  # Preview Surface defaults to 1.5; keep existing files unchanged.
+        out(f"float inputs:ior = {_num(v['ior'])}")
+    # Preview Surface has no volume absorption or thickness.
     if v["coat"]:
         out(f"float inputs:clearcoat = {_num(v['coat'])}")
         out("float inputs:clearcoatRoughness = 0.05")

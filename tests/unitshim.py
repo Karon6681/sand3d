@@ -133,7 +133,8 @@ LENGTHS = {
     "seat": {"host": "-", "part": "-"},
     # assembly
     "material": {"ob": "-", "kind": "-", "color": "-", "roughness": "-", "metallic": "-", "opacity": "-",
-                 "emission": "-"},
+                 "emission": "-", "absorb": "-", "absorb_distance": "L", "thickness": "P",
+                 "ior": "-", "transmission": "-"},
     "group": {"name": "-", "children": "-"},
     "assembly": {"name": "-", "children": "-", "anchors": "-"},
     "attach": {"handle": "-", "name": "-", "children": "-"},

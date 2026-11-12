@@ -10,7 +10,7 @@ the tool, and `join` keeps its first object's.
 
 `resolve` turns the tags into Blender materials: one Principled BSDF of flat values
 per distinct look — what a GLB carries (base colour, metallic, roughness, alpha,
-transmission, clearcoat, sheen, emission). It runs after every public verb once a
+transmission, IOR, volume absorption, clearcoat, sheen, emission). It runs after every public verb once a
 program has set a material, so the scene is right whoever reads it; a program that
 sets none never runs it, and builds and exports exactly as before.
 """
@@ -56,7 +56,7 @@ PRESETS = {
     "leather":        dict(color="#6b3e26", roughness=0.5),
     "marble":         dict(color="#e8e6e1", roughness=0.15, coat=0.4),
     "concrete":       dict(color="#9a9893", roughness=0.85),
-    # natural surfaces: flat average colours, no texture or volume absorption
+    # natural materials: flat average colours, no texture
     "bark":           dict(color="#69503b", roughness=0.9),
     "leaf":           dict(color="#52703d", roughness=0.5, coat=0.12),
     "moss":           dict(color="#596344", roughness=0.95),
@@ -64,23 +64,33 @@ PRESETS = {
     "rock":           dict(color="#85827b", roughness=0.9),
     "soil":           dict(color="#66503c", roughness=1.0),
     "sand":           dict(color="#c5b58e", roughness=0.9),
-    "water":          dict(color="#f4f8f8", roughness=0.08, transmission=1.0),
+    "water":          dict(color="#f4f8f8", roughness=0.08, transmission=1.0,
+                           ior=1.333, absorb="#b8e8ed", absorb_distance=1000.0),
     "snow":           dict(color="#eef1f3", roughness=0.85, coat=0.03),
+    "foam":           dict(color="#f5f5f2", roughness=0.95),
     # a surface that gives light, in its own colour
     "light":          dict(color="#fff1dc", roughness=0.5, emission=12.0),
 }
 
 
-def material(ob, kind, color=None, roughness=None, metallic=None, opacity=None, emission=None):
+def material(ob, kind, color=None, roughness=None, metallic=None, opacity=None, emission=None,
+             absorb=None, absorb_distance=None, thickness="auto", ior=None, transmission=None):
     """Kind: oak walnut pine birch steel brushed_steel chrome aluminium brass copper
     painted_metal plastic glossy_plastic rubber glass ceramic fabric velvet leather marble
-    concrete bark leaf moss grass rock soil sand water snow light; color "#rrggbb".
+    concrete bark leaf moss grass rock soil sand water snow foam light; color "#rrggbb".
 
     `ob` — a part, a group, an assembly or a list — made of `kind`, one of the presets,
     its colour (sRGB: "#rrggbb" or (r, g, b) in 0..1), roughness, metallic, opacity (1
     opaque, 0 invisible) or emission (the light it gives, in its own colour) changed where
     given. On a group or an assembly, every part under it that names none of its own: the
     nearest call wins, in whatever order the calls come. Returns `ob`.
+
+    absorb is the sRGB colour white light becomes after absorb_distance (in program
+    units), following Beer-Lambert attenuation. Zero distance disables absorption.
+    thickness is the constant depth glTF viewers assume: "auto" (the default) estimates
+    it at export from the meshes that wear the material, 2 x volume / area; a length
+    sets it. Cycles uses the closed mesh's actual depth. ior is 1..1000, transmission 0..1.
+    None inherits the preset. Water absorbs over one metre with IOR 1.333.
 
     color may be a deterministic callable. inspect.signature must declare exactly
     three or four or five positional parameters, no variadics or keyword-only parameters:
@@ -110,6 +120,21 @@ def material(ob, kind, color=None, roughness=None, metallic=None, opacity=None, 
                                  + ("between 0 and 1" if top else "of 0 or more")
                                  + (" — 1 is opaque, 0 invisible" if name == "opacity" else ""))
         given[name] = None if value is None else float(value)
+    if absorb is not None:
+        given["absorb"] = _hex(absorb)
+    if thickness != "auto":
+        if (isinstance(thickness, bool) or not isinstance(thickness, (int, float))
+                or not math.isfinite(thickness) or thickness < 0):
+            raise ValueError(f'material: thickness must be "auto" or a finite length of 0 or more, not {thickness!r}')
+        given["thickness"] = float(thickness)
+    for name, value, low, high in (("absorb_distance", absorb_distance, 0, None),
+                                    ("ior", ior, 1, 1000), ("transmission", transmission, 0, 1)):
+        if value is not None:
+            if (isinstance(value, bool) or not isinstance(value, (int, float))
+                    or not math.isfinite(value) or value < low or (high is not None and value > high)):
+                raise ValueError(f"material: {name} must be finite and "
+                                 + (f"between {low} and {high}" if high is not None else "0 or more"))
+            given[name] = float(value)
     tag = json.dumps({"kind": kind, **({FUNCTION: function} if function is not None else {}), **{k: v for k, v in given.items() if v is not None}}, sort_keys=True)
     targets = [t.root if isinstance(t, Handle) else t for t in _flat([ob])]
     for target in targets:                  # all checked before any is tagged
@@ -145,7 +170,11 @@ def look(tag):
     spec = json.loads(tag)
     spec.pop(FUNCTION, None)
     values = dict(metallic=0.0, opacity=1.0, transmission=0.0, coat=0.0, sheen=0.0, emission=0.0)
-    values.update(PRESETS[spec.pop("kind")])
+    kind = spec.pop("kind")
+    values.update(ior=1.5, absorb="#ffffff", absorb_distance=0.0, thickness="auto")
+    values.update(PRESETS[kind])
+    if kind == "water":
+        values["absorb_distance"] = _core.mm(values["absorb_distance"])
     values.update(spec)
     return values
 
@@ -157,7 +186,7 @@ def _name(tag):
     if FUNCTION in spec:
         spec.pop(FUNCTION, None)
         kind += " face colours"
-    return " ".join([kind, *(str(v) if k == "color" else f"{k}={v:g}" for k, v in sorted(spec.items()))])
+    return " ".join([kind, *(str(v) if k == "color" else f"absorb={v}" if k == "absorb" else f"{k}={v}" if isinstance(v, str) else f"{k}={v:g}" for k, v in sorted(spec.items()))])
 
 
 def _material(tag, made):
@@ -171,10 +200,32 @@ def _material(tag, made):
     bsdf = mat.node_tree.nodes["Principled BSDF"]
     rgba = _linear(v["color"])
     for socket, value in (("Base Color", rgba), ("Roughness", v["roughness"]), ("Metallic", v["metallic"]),
-                          ("Alpha", v["opacity"]), ("Transmission Weight", v["transmission"]),
+                          ("IOR", v["ior"]), ("Alpha", v["opacity"]), ("Transmission Weight", v["transmission"]),
                           ("Coat Weight", v["coat"]), ("Sheen Weight", v["sheen"]),
                           ("Emission Color", rgba), ("Emission Strength", v["emission"])):
         bsdf.inputs[socket].default_value = value
+    if v["absorb_distance"] > 0 and (v["thickness"] == "auto" or v["thickness"] > 0):
+        node = mat.node_tree.nodes.new("ShaderNodeVolumeAbsorption")
+        node.name = "Absorption"
+        # Cycles uses sigma = (1 - colour) * density, not -log(colour)/distance.
+        sigma = [-math.log(max(c, 1e-6)) / v["absorb_distance"] for c in _linear(v["absorb"])[:3]]
+        density = max(sigma)
+        node.inputs["Density"].default_value = density
+        node.inputs["Color"].default_value = (*(1 - c / density if density else 1 for c in sigma), 1)
+        mat.node_tree.links.new(node.outputs["Volume"], mat.node_tree.nodes["Material Output"].inputs["Volume"])
+        group = bpy.data.node_groups.get("glTF Material Output")
+        if group is None:
+            group = bpy.data.node_groups.new("glTF Material Output", "ShaderNodeTree")
+            group.interface.new_socket(name="Thickness", in_out="INPUT", socket_type="NodeSocketFloat")
+            # Also prevents Blender 5.2 from inlining away this export-only group.
+            socket = group.interface.new_socket(name="Occlusion", in_out="INPUT", socket_type="NodeSocketFloat")
+            socket.default_value = 1.0
+            group.nodes.new("NodeGroupInput")
+            group.nodes.new("NodeGroupOutput")
+        output = mat.node_tree.nodes.new("ShaderNodeGroup")
+        output.node_tree = group
+        # "auto" is estimated from the meshes at export; Cycles never reads it.
+        output.inputs["Thickness"].default_value = 0.0 if v["thickness"] == "auto" else v["thickness"]
     if v["coat"]:
         bsdf.inputs["Coat Roughness"].default_value = 0.05
     if v["opacity"] < 1:
@@ -350,3 +401,56 @@ def exporting(root, mode="material"):
             bpy.data.meshes.remove(mesh)
         for mat in set(bpy.data.materials) - before:
             bpy.data.materials.remove(mat)
+
+
+@contextmanager
+def volume_export():
+    """Lend glTF's attenuation parameters; restore Cycles even on export failure.
+
+    The exporter copies colour and reciprocal density literally. Distance is in
+    world metres; thickness remains in mesh units (the export root scales it).
+    """
+    saved = []
+    try:
+        for mat in bpy.data.materials:
+            if TAG not in mat or not mat.use_nodes:
+                continue
+            node = mat.node_tree.nodes.get("Absorption")
+            if node is None:
+                continue
+            v = look(mat[TAG])
+            color, density = node.inputs["Color"], node.inputs["Density"]
+            saved.append((color, tuple(color.default_value)))
+            saved.append((density, density.default_value))
+            color.default_value = _linear(v["absorb"])
+            density.default_value = 1 / (v["absorb_distance"] * _core.MM / 1000)
+            if v["thickness"] == "auto":
+                output = next(n for n in mat.node_tree.nodes
+                              if n.type == "GROUP" and n.node_tree and n.node_tree.name == "glTF Material Output")
+                socket = output.inputs["Thickness"]
+                saved.append((socket, socket.default_value))
+                socket.default_value = _auto_thickness(mat)
+        yield
+    finally:
+        for socket, value in saved:
+            socket.default_value = value
+
+
+def _auto_thickness(mat):
+    """2 x volume / area of the meshes wearing `mat`, in mesh units: a slab's thickness.
+
+    Summed over every mesh with the material, so one value per material; a mesh
+    without volume (open or empty) contributes nothing. Falls back to one metre."""
+    import bmesh
+    volume = area = 0.0
+    for me in sorted({ob.data for ob in bpy.data.objects
+                      if ob.type == "MESH" and any(s.material == mat for s in ob.material_slots)},
+                     key=lambda m: m.name):
+        bm = bmesh.new()
+        bm.from_mesh(me)
+        v = abs(bm.calc_volume(signed=False))
+        if v > 0:
+            volume += v
+            area += sum(f.calc_area() for f in bm.faces)
+        bm.free()
+    return 2 * volume / area if volume > 0 and area > 0 else _core.mm(1000)
