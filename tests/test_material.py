@@ -221,7 +221,7 @@ class Nature(unittest.TestCase):
     def setUp(self):
         s3d.empty_scene()
 
-    kinds = ('bark', 'leaf', 'moss', 'grass', 'rock', 'soil', 'sand', 'water', 'snow')
+    kinds = ('bark', 'leaf', 'moss', 'grass', 'rock', 'soil', 'sand', 'water', 'snow', 'foam')
 
     def test_nature_exports_and_tints(self):
         for kind in self.kinds:
@@ -257,6 +257,16 @@ class Nature(unittest.TestCase):
                         if v['coat']:
                             self.assertIn('float inputs:clearcoat = '+str(v['coat']), text)
 
+    def test_foam_is_white_diffuse_and_rough(self):
+        ob = s3d.material(s3d.box("suds", 10, 10, 10), "foam")
+        inputs = bsdf(ob)
+        self.assertAlmostEqual(inputs["Roughness"].default_value, .95)
+        self.assertEqual(inputs["Transmission Weight"].default_value, 0)
+        self.assertEqual(inputs["Metallic"].default_value, 0)
+        self.assertEqual(inputs["Alpha"].default_value, 1)
+        self.assertGreater(min(inputs["Base Color"].default_value[:3]), .88)
+        self.assertNotIn("Absorption", ob.data.materials[0].node_tree.nodes)
+
     def test_nature_suggestions(self):
         for typo, kind in [('barrk', 'bark'), ('watr', 'water'), ('snoow', 'snow')]:
             with self.assertRaisesRegex(ValueError, "did you mean.*'"+kind+"'"):
@@ -267,7 +277,7 @@ class Nature(unittest.TestCase):
         import sys
         code = '''import sand3d as s
 from sand3d import materials as m
-for kind in ('bark','leaf','moss','grass','rock','soil','sand','water','snow'):
+for kind in ('bark','leaf','moss','grass','rock','soil','sand','water','snow','foam'):
  ob=s.material(s.box(kind,1,1,1),kind,color='#778899')
  print('@@nature', kind, m.look(ob[m.TAG]), ob.data.materials[0].name, flush=True)
 import os; os._exit(0)

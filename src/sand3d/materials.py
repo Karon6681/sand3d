@@ -67,6 +67,7 @@ PRESETS = {
     "water":          dict(color="#f4f8f8", roughness=0.08, transmission=1.0,
                            ior=1.333, absorb="#b8e8ed", absorb_distance=1000.0),
     "snow":           dict(color="#eef1f3", roughness=0.85, coat=0.03),
+    "foam":           dict(color="#f5f5f2", roughness=0.95),
     # a surface that gives light, in its own colour
     "light":          dict(color="#fff1dc", roughness=0.5, emission=12.0),
 }
@@ -76,7 +77,7 @@ def material(ob, kind, color=None, roughness=None, metallic=None, opacity=None, 
              absorb=None, absorb_distance=None, thickness=None, ior=None, transmission=None):
     """Kind: oak walnut pine birch steel brushed_steel chrome aluminium brass copper
     painted_metal plastic glossy_plastic rubber glass ceramic fabric velvet leather marble
-    concrete bark leaf moss grass rock soil sand water snow light; color "#rrggbb".
+    concrete bark leaf moss grass rock soil sand water snow foam light; color "#rrggbb".
 
     `ob` — a part, a group, an assembly or a list — made of `kind`, one of the presets,
     its colour (sRGB: "#rrggbb" or (r, g, b) in 0..1), roughness, metallic, opacity (1
