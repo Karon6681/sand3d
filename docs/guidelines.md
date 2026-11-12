@@ -494,25 +494,3 @@ already holds about two million triangles.
 than `min_component_cells * cell` (default 3). The largest component is always
 kept; `min_component_cells=0` keeps every component. The filter removes complete
 closed shells, never individual faces. Thin connected features remain.
-
-## Things strewn on uneven ground
-
-Never compute where a stone lands from the terrain's own formula. Sample the
-terrain itself, keep the sites a plain condition allows, and seat each object on
-its site. `scatter(n, ground)` gives frames on the part's surface, normals out;
-the condition reads `f.normal` (slope) and `f.origin` (where):
-
-```python
-sites = s3d.scatter(10 * n, ground, seed=seed)       # the top is a fraction of the surface
-level = math.cos(math.radians(steepest))
-sites = s3d.Frames([f for f in sites if f.normal.z > level and abs(f.origin.y) > channel])[:n]
-```
-
-Then `at(ob, on=site)` stands an object on its site, along the local normal
-(`site.offset(-d / 4)` sinks it a quarter); `lay(at(leaf, on=site), ground)`
-seats a flat piece on the surface under it; `snap(ground, [(x, y, above)],
-direction="-Z")` finds the ground under a chosen spot, and `Frame(hit.origin)`
-keeps what stands there upright. The surface includes the part's sides and
-underside, which the slope test removes: ask for more sites than you keep, and
-check how many remain. The complete recipe is
-[examples/stony_ground.py](examples/stony_ground.py).
