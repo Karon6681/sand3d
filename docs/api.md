@@ -252,7 +252,9 @@ fine block face into its neighbour until its boundary has uniform-sign faces.
 Extraction uses the same fine lattice
 throughout: no coarse/fine seams. This is a heuristic, not a bound for arbitrary callbacks;
 a whole component hidden between all initial probes may be missed. Choose cell
-small enough to resolve the features, including at the coarse scale (four cells).
+small enough to resolve the features, including at the coarse scale (four cells),
+and no smaller: about half the thinnest wall, two thirds of the smallest relief.
+Triangles and time grow as surface area / cell².
 Crossings are refined by up to twelve bracketed zero-finding steps on shared edges,
 reducing interpolation ripples for non-distance densities; clipped boundary edges keep
 linear interpolation. Refinement preserves connectivity, but cannot recover missing sheets.

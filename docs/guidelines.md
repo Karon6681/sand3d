@@ -479,6 +479,17 @@ Ridged and turbulence transform gradient noise. Coordinates are dimensionless,
 finite and within 2**50. This realization differs from `displace`, which retains
 its existing noise to preserve existing geometry.
 
+### Choosing `cell`
+
+`cell` is the finest detail a field can show, and its cost: the triangle count, and
+the time, grow as the surface area divided by `cell`². Choose it from the smallest
+feature the asset must keep, not from its overall size: about half the thinnest wall
+(a leaf, a frond, a shell), about two thirds of the smallest relief that must read
+(grain, pits, ridges). Finer than that costs time and file size without a visible
+gain: halving `cell` quadruples both. Coarser, thin walls tear and relief smooths
+away. As an order of magnitude, a closed surface 1.5 m across at a 7 mm cell
+already holds about two million triangles.
+
 `field` drops disconnected components whose longest bounding-box extent is less
 than `min_component_cells * cell` (default 3). The largest component is always
 kept; `min_component_cells=0` keeps every component. The filter removes complete
