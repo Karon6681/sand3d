@@ -17,6 +17,7 @@ def smooth(ob, angle=55):
     for part in parts:
         if "s3d~merged.shading" in part:
             del part["s3d~merged.shading"]
+        _core.own_mesh(part)
         part[_core.SHADE] = float(angle)
-    _core.shade_meshes()
+    _core.shade_meshes(parts)
     return ob

@@ -944,11 +944,11 @@ def text(s, size, font=None):
     curve.resolution_u = 6
     if font:
         curve.font = bpy.data.fonts.load(str(font), check_existing=True)
-    ob = _core.link(bpy.data.objects.new("_text", curve))
-    depsgraph = bpy.context.evaluated_depsgraph_get()
-    mesh = bpy.data.meshes.new_from_object(ob.evaluated_get(depsgraph), depsgraph=depsgraph)
-    bpy.data.objects.remove(ob)
-    bpy.data.curves.remove(curve)
+    ob = bpy.data.objects.new("_text", curve)
+    try:
+        mesh = _core.evaluated_mesh(ob)
+    finally:
+        bpy.data.curves.remove(curve)
     co = [(v.co.x, v.co.y) for v in mesh.vertices]
     directed = set()
     for poly_ in mesh.polygons:

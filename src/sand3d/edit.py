@@ -64,8 +64,7 @@ def _tool_mesh(tool, rel, strip):
 def _evaluate(base_mesh, tool_meshes, operation, self_intersect=False):
     """Run one EXACT boolean on temporary objects; the evaluated mesh."""
     coll = bpy.data.collections.new("_s3d_tools")
-    bpy.context.scene.collection.children.link(coll)
-    base = _core.link(bpy.data.objects.new("_s3d_base", base_mesh))
+    base = bpy.data.objects.new("_s3d_base", base_mesh)
     tools = []
     for me in tool_meshes:
         t = bpy.data.objects.new("_s3d_tool", me)
@@ -78,16 +77,10 @@ def _evaluate(base_mesh, tool_meshes, operation, self_intersect=False):
         mod.operand_type, mod.object = "OBJECT", tools[0]
     else:
         mod.operand_type, mod.collection = "COLLECTION", coll
-    depsgraph = bpy.context.evaluated_depsgraph_get()
-    result = bpy.data.meshes.new_from_object(base.evaluated_get(depsgraph), preserve_all_data_layers=True,
-                                             depsgraph=depsgraph)
-    for t in tools:
-        bpy.data.objects.remove(t)
-    bpy.data.objects.remove(base)
-    bpy.data.collections.remove(coll)
-    for me in [base_mesh, *tool_meshes]:
-        if me.users == 0:
-            bpy.data.meshes.remove(me)
+    try:
+        result = _core.evaluated_mesh(base, collection=coll, preserve_all_data_layers=True)
+    finally:
+        bpy.data.batch_remove([me for me in {base_mesh, *tool_meshes} if me.users == 0])
     return result
 
 
@@ -415,6 +408,7 @@ def _replace_mesh(ob, bm):
     bm.to_mesh(mesh)
     bm.free()
     ob.data = mesh
+    _core.hook_objects.append(ob)
     if old.users == 0:
         bpy.data.meshes.remove(old)
     mesh.name = _core.given_name(ob)
@@ -590,27 +584,37 @@ def _flat(items):
 
 
 def _delete_tree(ob):
-    """Remove `ob` and everything under it."""
-    for child in list(ob.children):
-        _delete_tree(child)
-    delete(ob)
+    """Remove `ob` and everything under it, children before parents."""
+    children = _children()
+    parts = []
+    def walk(part):
+        for child in children.get(part, ()):
+            walk(child)
+        parts.append(part)
+    walk(ob)
+    delete(parts)
 
 
 def delete(ob):
     """Remove it.
 
     Remove `ob` from the scene; an object a verb used up is gone already."""
-    if isinstance(ob, (list, tuple)):
-        for part in ob:
-            delete(part)
-        return
-    if _guard.removed(ob):
-        return
-    _guard.deleting(ob)
-    mesh = ob.data if ob.type == "MESH" else None
-    bpy.data.objects.remove(ob)
-    if mesh is not None and mesh.users == 0:
-        bpy.data.meshes.remove(mesh)
+    parts, seen = [], set()
+    def collect(part):
+        if isinstance(part, (list, tuple)):
+            for child in part:
+                collect(child)
+        elif not _guard.removed(part) and part not in seen:
+            seen.add(part)
+            parts.append(part)
+    collect(ob)
+    meshes = set()
+    for part in parts:
+        _guard.deleting(part)
+        if part.type == "MESH":
+            meshes.add(part.data)
+    bpy.data.batch_remove(parts)
+    bpy.data.batch_remove([mesh for mesh in meshes if mesh.users == 0])
 
 
 # ---------------------------------------------------------------- holes and pockets
@@ -910,16 +914,15 @@ def _bevel_weighted(ob, bm, picks, segments, kind):
         p.material_index = 0
     me.materials.append(None)
     me.materials.append(None)
-    temp = _core.link(bpy.data.objects.new("_s3d_bevel", me))
+    temp = bpy.data.objects.new("_s3d_bevel", me)
     mod = temp.modifiers.new("bevel", "BEVEL")
     mod.limit_method, mod.edge_weight, mod.affect = "WEIGHT", "s3d~weight", "EDGES"
     mod.width, mod.offset_type, mod.segments, mod.profile = top * size, "OFFSET", segments, 0.5
     mod.use_clamp_overlap, mod.loop_slide, mod.material = True, True, 1
-    depsgraph = bpy.context.evaluated_depsgraph_get()
-    result = bpy.data.meshes.new_from_object(temp.evaluated_get(depsgraph), preserve_all_data_layers=True,
-                                             depsgraph=depsgraph)
-    bpy.data.objects.remove(temp)
-    bpy.data.meshes.remove(me)
+    try:
+        result = _core.evaluated_mesh(temp, preserve_all_data_layers=True)
+    finally:
+        bpy.data.meshes.remove(me)
     out = bmesh.new()
     out.from_mesh(result)
     bpy.data.meshes.remove(result)
@@ -976,13 +979,39 @@ def _sort_mesh(bm):
     """Vertices by position, edges and faces by their vertices: bevel and the boolean modifier
     make them in an order that changes with the run or the machine's thread count. Only
     where nothing holds an element: sorting moves them."""
-    def by(seq, key):
-        rank = {x: i for i, x in enumerate(sorted(seq, key=key))}
+    def by(seq, rows, dtype, width=None):
+        if len(rows) == 0:
+            return
+        if width is None or all(len(row) == width for row in rows):
+            values = np.asarray(rows, dtype=dtype)
+        else:
+            # A polygon's vertex list sorts before any longer list with that prefix.
+            # Keep very wide, mostly empty matrices out of the allocation path.
+            if width > 32:
+                order = sorted(range(len(rows)), key=rows.__getitem__)
+                values = None
+            else:
+                values = np.full((len(rows), width), -1, dtype=dtype)
+                for i, row in enumerate(rows):
+                    values[i, :len(row)] = row
+        if values is not None:
+            if dtype == np.float64 and not np.isfinite(values).all():
+                order = sorted(range(len(rows)), key=rows.__getitem__)
+            else:
+                # lexsort is stable: coincident elements retain their original order.
+                order = np.lexsort(values[:, ::-1].T)
+        ranks = np.empty(len(rows), dtype=np.intp)
+        ranks[order] = np.arange(len(rows))
+        rank = dict(zip(seq, map(int, ranks)))
         seq.sort(key=rank.__getitem__)
         seq.index_update()
-    by(bm.verts, lambda v: tuple(v.co))
-    by(bm.edges, lambda e: sorted(v.index for v in e.verts))
-    by(bm.faces, lambda f: [v.index for v in f.verts])
+    by(bm.verts, [tuple(v.co) for v in bm.verts], np.float64)
+    edge_keys = np.fromiter((v.index for e in bm.edges for v in e.verts),
+                            dtype=np.int32, count=2 * len(bm.edges)).reshape(-1, 2)
+    edge_keys.sort(axis=1)
+    by(bm.edges, edge_keys, np.int32)
+    rows = [[v.index for v in f.verts] for f in bm.faces]
+    by(bm.faces, rows, np.int32, max(map(len, rows), default=0))
 
 
 def fillet(ob, r, edges="all"):
@@ -1264,10 +1293,10 @@ def _copy(ob, children=None, seen=None):
 
 
 def _twin(ob):
-    """A new object like `ob` — placement, custom properties, its own copy of the mesh —
+    """A new object like `ob` — placement, custom properties, a shared mesh until edited —
     in the scene, under the same parent."""
-    twin = ob.copy()                   # Blender shares the mesh: copy it
-    if ob.data is not None:
+    twin = ob.copy()
+    if ob.data is not None and ob.type != "MESH":
         twin.data = ob.data.copy()
     twin[_core.NAME] = _core.given_name(ob)   # a group has none; the copy's own name is suffixed
     return _core.link(twin)
@@ -1345,72 +1374,167 @@ def merge(*obs):
     return first
 
 
+def _mesh_array(elements, prop, width=1, dtype=np.int32):
+    values = np.empty(len(elements) * width, dtype=dtype)
+    elements.foreach_get(prop, values)
+    if dtype == np.float32:
+        # Reading RNA scalars through Python quiets signaling NaNs. Match that
+        # conversion while preserving their payload, sign, and all finite bits.
+        bits = values.view(np.uint32)
+        bits[np.isnan(values)] |= np.uint32(0x00400000)
+    return values.reshape(-1, width) if width != 1 else values
+
+
+def _mesh_geometry(parts):
+    """Coordinates and polygon loops in input order, with reflected rings reversed."""
+    coordinates, vertices, sizes = [], [], []
+    base = 0
+    for me, matrix in parts:
+        # Keep mathutils' single-precision multiply and addition order.
+        coordinates.extend(matrix @ v.co for v in me.vertices)
+        ring = _mesh_array(me.loops, "vertex_index")
+        count = _mesh_array(me.polygons, "loop_total")
+        if matrix.to_3x3().determinant() < 0:
+            starts = np.repeat(np.cumsum(count) - count, count)
+            ring = ring[2 * starts + np.repeat(count, count) - 1 - np.arange(len(ring))]
+        vertices.append(ring + base)
+        sizes.append(count)
+        base += len(me.vertices)
+    return (np.asarray(coordinates, dtype=np.float32).reshape(-1, 3),
+            np.concatenate(vertices), np.concatenate(sizes))
+
+
 def _concat(meshes):
     """The meshes, each moved by its matrix, as one bmesh; tag attributes kept."""
-    face_tags, edge_tags = [], []
-    verts, faces, edge_keys = [], [], []
-    smooth_faces, sharp_edges = [], []
-    point_attributes = {}
-    for me, _ in meshes:
-        for attr in me.attributes:
-            if attr.domain == "POINT" and attr.data_type == "FLOAT":
-                point_attributes.setdefault(attr.name, [])
-    attributes = {}
-    supported = {"FLOAT": "float", "INT": "int", "BOOLEAN": "bool", "FLOAT_VECTOR": "float_vector"}
-    for me, _ in meshes:
-        for a in me.attributes:
-            if a.domain == "FACE" and a.data_type in supported and not a.name.startswith(_core.FACE_TAG):
-                attributes[a.name] = (a.data_type, [])
-    for me, m in meshes:
-        for name, values in point_attributes.items():
-            attr = me.attributes.get(name)
-            values.extend([d.value for d in attr.data] if attr is not None else [float("nan")]*len(me.vertices))
-        smooth_faces.extend(p.use_smooth for p in me.polygons)
-        for name, (kind, values) in attributes.items():
-            attr = me.attributes.get(name)
-            default = (0,0,0) if kind == "FLOAT_VECTOR" else 0
-            values.extend([getattr(d, "vector" if kind == "FLOAT_VECTOR" else "value")[:] if kind == "FLOAT_VECTOR" else d.value for d in attr.data] if attr is not None else [default]*len(me.polygons))
-        flip = m.to_3x3().determinant() < 0
-        base = len(verts)
-        verts += [m @ v.co for v in me.vertices]
-        fl = {a.name: [d.value for d in a.data] for a in me.attributes
-              if a.name.startswith(_core.FACE_TAG)}
-        el = {a.name: [d.value for d in a.data] for a in me.attributes
-              if a.name.startswith(_core.EDGE_TAG)}
-        for i, p in enumerate(me.polygons):
-            vs = [base + v for v in p.vertices]
-            faces.append(vs[::-1] if flip else vs)
-            face_tags.append({n[len(_core.FACE_TAG):] for n, vals in fl.items() if vals[i]})
-        for i, e in enumerate(me.edges):
-            if e.use_edge_sharp:
-                sharp_edges.append(frozenset((base+e.vertices[0],base+e.vertices[1])))
-            tags = {n[len(_core.EDGE_TAG):] for n, vals in el.items() if vals[i]}
-            if tags:
-                edge_keys.append((frozenset((base + e.vertices[0], base + e.vertices[1])), tags))
-    bm = bmesh.new()
-    point_layers = {name: bm.verts.layers.float.new(name) for name in point_attributes}
-    bv = [bm.verts.new(v) for v in verts]
-    for name,values in point_attributes.items():
-        layer = point_layers[name]
-        for v,value in zip(bv,values):
-            v[layer] = value
-    for f in faces:
-        bm.faces.new([bv[i] for i in f])
-    bm.verts.index_update()
-    bm.faces.index_update()
-    bm.edges.index_update()
-    lookup = {frozenset((e.verts[0].index, e.verts[1].index)): e.index for e in bm.edges}
-    _core.add_tags(bm, dict(enumerate(face_tags)), {lookup[k]: t for k, t in edge_keys if k in lookup})
-    for name, (kind, values) in attributes.items():
-        layer = getattr(bm.faces.layers, supported[kind]).new(name)
-        for face, value in zip(bm.faces, values):
-            face[layer] = value
-    for face, smooth in zip(bm.faces, smooth_faces):
-        face.smooth = smooth
-    bm.edges.ensure_lookup_table()
-    for key in sharp_edges:
-        bm.edges[lookup[key]].smooth = False
-    return bm
+    co, rings, counts = _mesh_geometry(meshes)
+    starts = np.cumsum(counts, dtype=np.int32) - counts
+    # BM_face_create_verts creates the closing edge first, then the ring's edges.
+    previous = np.arange(len(rings)) - 1
+    previous[starts] = starts + counts - 1
+    pairs = np.column_stack((rings[previous], rings))
+    keys = np.sort(pairs, axis=1)
+    unique, first, inverse = np.unique(keys, axis=0, return_index=True, return_inverse=True)
+    order = np.argsort(first)
+    rank = np.empty(len(order), dtype=np.int32)
+    rank[order] = np.arange(len(order))
+    edges = pairs[first[order]]
+    mesh = bpy.data.meshes.new("_s3d_concat")
+    try:
+        mesh.vertices.add(len(co))
+        mesh.vertices.foreach_set("co", co.ravel())
+        mesh.edges.add(len(edges))
+        mesh.edges.foreach_set("vertices", edges.ravel())
+        mesh.loops.add(len(rings))
+        mesh.loops.foreach_set("vertex_index", rings)
+        # A loop uses its outgoing edge, rather than its incoming edge.
+        following = np.arange(len(rings)) + 1
+        following[starts + counts - 1] = starts
+        mesh.loops.foreach_set("edge_index", rank[inverse[following]])
+        mesh.polygons.add(len(counts))
+        mesh.polygons.foreach_set("loop_start", starts)
+        mesh.polygons.foreach_set("loop_total", counts)
+        supported = {"FLOAT": ("value", 1, np.float32), "INT": ("value", 1, np.int32),
+                     "BOOLEAN": ("value", 1, np.bool_), "FLOAT_VECTOR": ("vector", 3, np.float32)}
+        point = {}
+        face = {}
+        face_tags, edge_tags = set(), set()
+        for me, _ in meshes:
+            for a in me.attributes:
+                if a.domain == "POINT" and a.data_type == "FLOAT":
+                    point.setdefault(a.name, "FLOAT")
+                if a.domain == "FACE" and a.data_type in supported and not a.name.startswith(_core.FACE_TAG):
+                    face[a.name] = a.data_type
+                if a.name.startswith(_core.FACE_TAG) and np.any(_mesh_array(a.data, "value", dtype=np.bool_)):
+                    face_tags.add(a.name)
+                if a.name.startswith(_core.EDGE_TAG) and np.any(_mesh_array(a.data, "value", dtype=np.bool_)):
+                    edge_tags.add(a.name)
+        def attribute(name, kind, domain, values):
+            prop, width, dtype = supported[kind]
+            a = mesh.attributes.get(name)
+            if a is None:
+                a = mesh.attributes.new(name, kind, domain)
+            a.data.foreach_set(prop, np.asarray(values, dtype=dtype).ravel())
+
+        def concatenate(name, kind, domain, default=0):
+            prop, width, dtype = supported[kind]
+            arrays = []
+            for me, _ in meshes:
+                a = me.attributes.get(name)
+                n = len(me.vertices) if domain == "POINT" else len(me.polygons)
+                arrays.append(_mesh_array(a.data, prop, width, dtype) if a is not None else
+                              np.full((n, width) if width != 1 else n, default, dtype=dtype))
+            return np.concatenate(arrays)
+
+        for name, kind in point.items():
+            attribute(name, kind, "POINT", concatenate(name, kind, "POINT", float("nan")))
+        for name in sorted(face_tags):
+            attribute(name, "BOOLEAN", "FACE", concatenate(name, "BOOLEAN", "FACE"))
+        # Map source edge indices to the edges that face creation retained.
+        source_keys, sharp = [], []
+        base = 0
+        for me, _ in meshes:
+            source_keys.append(np.sort(_mesh_array(me.edges, "vertices", 2) + base, axis=1))
+            sharp.append(_mesh_array(me.edges, "use_edge_sharp", dtype=np.bool_))
+            base += len(me.vertices)
+        source_keys = np.concatenate(source_keys)
+        stride = max(len(co), 1)
+        encoded = unique[:, 0].astype(np.int64) * stride + unique[:, 1]
+        source = source_keys[:, 0].astype(np.int64) * stride + source_keys[:, 1]
+        found = np.searchsorted(encoded, source)
+        valid = found < len(encoded)
+        valid[valid] &= encoded[found[valid]] == source[valid]
+        target = np.zeros(len(source), dtype=np.int32)
+        target[valid] = rank[found[valid]]
+        edge_sharp = np.zeros(len(edges), dtype=np.bool_)
+        edge_sharp[target[valid]] = np.concatenate(sharp)[valid]
+        for name in sorted(edge_tags):
+            values = np.concatenate([_mesh_array(me.attributes[name].data, "value", dtype=np.bool_)
+                                     if name in me.attributes else np.zeros(len(me.edges), dtype=np.bool_)
+                                     for me, _ in meshes])
+            out = np.zeros(len(edges), dtype=np.bool_)
+            out[target[valid]] = values[valid]
+            if np.any(out):
+                attribute(name, "BOOLEAN", "EDGE", out)
+                edge_sharp |= out
+        for name, kind in face.items():
+            attribute(name, kind, "FACE", concatenate(name, kind, "FACE"))
+        smooth = np.concatenate([_mesh_array(me.polygons, "use_smooth", dtype=np.bool_) for me, _ in meshes])
+        mesh.polygons.foreach_set("use_smooth", smooth)
+        mesh.edges.foreach_set("use_edge_sharp", edge_sharp)
+        # Reserved face attributes used to be custom bmesh layers, not flags.
+        aliases = {}
+        for name in (".select_poly", ".hide_poly", "material_index"):
+            if name in face:
+                a = mesh.attributes[name]
+                a.name = "_s3d_concat_" + name
+                aliases[name] = a.name
+        bm = bmesh.new()
+        for name in point:
+            bm.verts.layers.float.new(name)
+        for name in sorted(face_tags):
+            bm.faces.layers.bool.new(name)
+        for name in sorted(edge_tags):
+            if name in mesh.attributes:
+                bm.edges.layers.bool.new(name)
+        layers = {"FLOAT": "float", "INT": "int", "BOOLEAN": "bool", "FLOAT_VECTOR": "float_vector"}
+        for name, kind in face.items():
+            getattr(bm.faces.layers, layers[kind]).new(name)
+        bm.from_mesh(mesh)
+        if aliases:
+            for elements in (bm.verts, bm.edges, bm.faces):
+                for element in elements:
+                    element.select = False
+                    element.hide = False
+        for name, alias in aliases.items():
+            collection = getattr(bm.faces.layers, layers[face[name]])
+            source, target_layer = collection[alias], collection[name]
+            for polygon in bm.faces:
+                polygon[target_layer] = polygon[source]
+            collection.remove(source)
+        bm.normal_update()
+        return bm
+    finally:
+        bpy.data.meshes.remove(mesh)
 
 
 def scale(ob, s):
@@ -1430,6 +1554,7 @@ def scale(ob, s):
         return ob
     _solids("scale", ob)
     sx, sy, sz = (s, s, s) if isinstance(s, (int, float)) else s
+    _core.own_mesh(ob)
     ob.data.transform(Matrix.Diagonal((sx, sy, sz, 1)))
     if sx * sy * sz < 0:
         ob.data.flip_normals()
@@ -1558,8 +1683,12 @@ def dent(ob, points, r, depth, *, coords="local"):
         centres = [own @ p for p in centres]
     bm = bmesh.new()
     bm.from_mesh(ob.data)
+    vertices = None
     for c in centres:
-        _densify(bm, c, r)
+        if vertices is None:
+            vertices = _vertex_tree(bm)
+        if _densify(bm, c, r, vertices=vertices):
+            vertices = None
     bm.normal_update()
     tree = KDTree(len(bm.verts))
     for v in bm.verts:
@@ -1573,17 +1702,32 @@ def dent(ob, points, r, depth, *, coords="local"):
     for index, push in moves.items():
         v = bm.verts[index]
         v.co -= v.normal * push
+    _core.own_mesh(ob)
     bm.to_mesh(ob.data)
     bm.free()
     return ob
 
 
-def _densify(bm, c, r, cuts=4):
+def _vertex_tree(bm):
+    tree = KDTree(len(bm.verts))
+    for i, v in enumerate(bm.verts):
+        tree.insert(v.co, i)
+    tree.balance()
+    return tree
+
+
+def _densify(bm, c, r, cuts=4, *, vertices=None):
     """Give the surface round `c` vertices to press: where none lies within r/`cuts` of
     it (a flat face meshed as one n-gon has none), cut the faces within `r` of it by
     planes r/`cuts` apart, both ways across the nearest face's normal."""
-    if any((v.co - c).length < r / cuts for v in bm.verts):
-        return
+    if vertices is None:
+        vertices = _vertex_tree(bm)
+    radius = r / cuts
+    # KDTree uses float distances. Widen only the candidate search, then retain
+    # the original Vector subtraction and strict predicate at the boundary.
+    margin = max(radius, *(abs(x) for x in c)) * 1e-6
+    if any((co - c).length < radius for co, index, distance in vertices.find_range(c, radius + margin)):
+        return False
     bm.faces.ensure_lookup_table()
     tree = BVHTree.FromBMesh(bm)
     near = tree.find_nearest_range(c, r)
@@ -1598,6 +1742,7 @@ def _densify(bm, c, r, cuts=4):
             bmesh.ops.bisect_plane(bm, geom=geom, dist=_core.mm(WELD), plane_co=c + axis * (k * r / cuts), plane_no=axis)
             bm.faces.ensure_lookup_table()
             near = BVHTree.FromBMesh(bm).find_nearest_range(c, r)
+    return True
 
 
 # ---------------------------------------------------------------- organic surfaces: blend, displace
@@ -1621,16 +1766,19 @@ def _number(verb, what, value, positive=False):
 
 def _soup(parts):
     """One mesh holding the faces of every (mesh, matrix), moved by it and facing out."""
-    verts, faces = [], []
-    for me, m in parts:
-        base = len(verts)
-        flip = m.to_3x3().determinant() < 0
-        verts += [m @ v.co for v in me.vertices]
-        for p in me.polygons:
-            vs = [base + i for i in p.vertices]
-            faces.append(vs[::-1] if flip else vs)
+    co, rings, counts = _mesh_geometry(parts)
     mesh = bpy.data.meshes.new("_s3d_blend")
-    mesh.from_pydata(verts, [], faces)
+    mesh.vertices.add(len(co))
+    mesh.vertices.foreach_set("co", co.ravel())
+    mesh.loops.add(len(rings))
+    mesh.loops.foreach_set("vertex_index", rings)
+    mesh.polygons.add(len(counts))
+    mesh.polygons.foreach_set("loop_start", np.cumsum(counts, dtype=np.int32) - counts)
+    mesh.polygons.foreach_set("loop_total", counts)
+    # Match from_pydata's default shading and Blender's inferred edge order.
+    mesh.shade_flat()
+    if len(counts):
+        mesh.update(calc_edges=True, calc_edges_loose=False)
     return mesh
 
 
@@ -1640,7 +1788,7 @@ def _closing(mesh, r, voxel):
     resolves where the pushed surface crosses itself), pull it back by r, remesh. The pull is
     the exact offset wherever the surface bends less than 1 / r, which the push guarantees.
     Remesh and Displace give the same mesh in every run and under bpy 4.5 and 5.x."""
-    holder = _core.link(bpy.data.objects.new("_s3d_blend", mesh))
+    holder = bpy.data.objects.new("_s3d_blend", mesh)
     try:
         def remesh():
             mod = holder.modifiers.new("remesh", "REMESH")
@@ -1650,10 +1798,8 @@ def _closing(mesh, r, voxel):
             mod = holder.modifiers.new("offset", "DISPLACE")
             mod.direction, mod.mid_level, mod.strength = "NORMAL", 0.0, d
             remesh()
-        depsgraph = bpy.context.evaluated_depsgraph_get()
-        result = bpy.data.meshes.new_from_object(holder.evaluated_get(depsgraph), depsgraph=depsgraph)
+        result = _core.evaluated_mesh(holder)
     finally:
-        bpy.data.objects.remove(holder)
         bpy.data.meshes.remove(mesh)
     bm = bmesh.new()
     bm.from_mesh(result)
@@ -1675,12 +1821,11 @@ def _facet_surface(bm):
         return bm
     mesh = bpy.data.meshes.new('_s3d_facets')
     bm.to_mesh(mesh)
-    holder = _core.link(bpy.data.objects.new('_s3d_facets', mesh))
+    holder = bpy.data.objects.new('_s3d_facets', mesh)
     try:
         mod = holder.modifiers.new('facets', 'DECIMATE')
         mod.ratio, mod.use_collapse_triangulate = budget / triangles, True
-        graph = bpy.context.evaluated_depsgraph_get()
-        result = bpy.data.meshes.new_from_object(holder.evaluated_get(graph), depsgraph=graph)
+        result = _core.evaluated_mesh(holder)
         coarse = bmesh.new()
         coarse.from_mesh(result)
         bpy.data.meshes.remove(result)
@@ -1690,15 +1835,19 @@ def _facet_surface(bm):
         bm.free()
         return coarse
     finally:
-        bpy.data.objects.remove(holder)
         bpy.data.meshes.remove(mesh)
 
 
 def _span(co):
     """(lo, hi) corners of the box round flat coordinates `co`, or None if there are none."""
-    if not co:
+    if not len(co):
         return None
-    return [min(co[a::3]) for a in range(3)], [max(co[a::3]) for a in range(3)]
+    values = np.asarray(co, dtype=np.float64).reshape(-1, 3)
+    if np.isnan(values).any():
+        return [min(co[a::3]) for a in range(3)], [max(co[a::3]) for a in range(3)]
+    # argmin/argmax keep the first equal value, including the sign of zero.
+    axes = np.arange(3)
+    return values[values.argmin(axis=0), axes].tolist(), values[values.argmax(axis=0), axes].tolist()
 
 
 def _thinnest(parts, size):
@@ -1826,16 +1975,23 @@ def _refine(bm, size, name, selection=None):
     bm.verts.index_update()
     bm.edges.index_update()
     cuts = {}
+    # A factor-two margin covers float32 edge lengths versus the double
+    # lengths in _rows. Restrict the shortcut to normal squared float32
+    # magnitudes, so underflow cannot make a long edge look short.
+    already_fine = 1e-15 <= longest <= 1e15
     for e in bm.edges:
         if selection is not None and not any(f[selection] for f in e.link_faces):
             continue
         length = e.calc_length()
         cuts[e] = max(1, math.ceil(length / longest)) if math.isfinite(length) else 1
+        already_fine = already_fine and length <= longest / 2
+    if already_fine:
+        return
     plans, added = [], 0
     faces = [f for f in bm.faces if selection is None or f[selection]]
     for k, f in enumerate(faces):
         corners = list(f.verts)
-        sides = [cuts[bm.edges.get((corners[i], corners[(i + 1) % len(corners)]))] for i in range(len(corners))]
+        sides = [cuts[loop.edge] for loop in f.loops]
         rows = _rows(corners, sides, longest) if len(corners) == 3 else []
         inside = sum(n - 1 for *_, n in rows)
         boundary = sum(sides)
@@ -1869,11 +2025,15 @@ def _rows(corners, sides, longest):
     them), as many as its height over that side asks, each cut as its own length asks —
     about one point per longest² of area, however long and thin the triangle. The points
     are the row's inner cuts. In double precision."""
-    k = max(range(3), key=lambda i: (sides[i], -i))
+    k = 0 if sides[0] >= sides[1] and sides[0] >= sides[2] else (1 if sides[1] >= sides[2] else 2)
     a, b, c = (tuple(corners[(k + i) % 3].co) for i in range(3))
     ab = [q - p for p, q in zip(a, b)]
-    ac = [q - p for p, q in zip(a, c)]
     base = math.sqrt(sum(x * x for x in ab))
+    # Every row is shorter than the base. With at most one piece it has no
+    # interior point, whatever the height; omit these empty rows altogether.
+    if base <= longest:
+        return []
+    ac = [q - p for p, q in zip(a, c)]
     cross = (ab[1] * ac[2] - ab[2] * ac[1], ab[2] * ac[0] - ab[0] * ac[2], ab[0] * ac[1] - ab[1] * ac[0])
     if not base or not all(math.isfinite(x) for x in cross):
         return []
@@ -2293,6 +2453,7 @@ def _deform(ob, value, axis, verb, toward=None):
                     v.co = a * u + p * (1 + (value - 1) * t)
         bm.transform(inverse)
         bm.normal_update()
+        _core.own_mesh(part)
         bm.to_mesh(part.data)
         bm.free()
         part.data.update()
@@ -2429,6 +2590,7 @@ def lay(ob, over, refine=0, reach=None):
                     bmesh.ops.triangulate(bm, faces=list(bm.faces), quad_method='FIXED', ngon_method='EAR_CLIP')
                 bm.transform(matrix.inverted())
                 bm.normal_update()
+                _core.own_mesh(part)
                 bm.to_mesh(part.data)
                 part.data.update()
             finally:
@@ -2476,6 +2638,7 @@ def lay(ob, over, refine=0, reach=None):
             positions.append(back @ (spot + up * height))
         seated.append((part, positions))
     for part, positions in seated:
+        _core.own_mesh(part)
         for v, co in zip(part.data.vertices, positions):
             v.co = co
         part.data.update()

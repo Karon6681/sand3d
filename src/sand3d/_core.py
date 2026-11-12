@@ -3,16 +3,39 @@
 Nothing here is public. No function reads `bpy.context.active_object` or the
 selection; the scene collection is the only context a verb touches.
 """
+from functools import lru_cache
 import hashlib
 import math
 
 import bpy  # before bmesh, which the bpy module only provides once loaded
 import bmesh
+import numpy as np
 from mathutils import Matrix, Vector, geometry
 
 
 #: Custom property holding the name a program gave an object (Blender may suffix ob.name).
 NAME = "s3d_name"
+
+
+def evaluated_mesh(ob, *, collection=None, preserve_all_data_layers=False):
+    """Evaluate private, unlinked objects without updating the program's scene.
+
+    Consume the temporary object and optional operand collection, even on failure.
+    Their input data stays owned by the caller; the returned mesh is independent.
+    """
+    scene = bpy.data.scenes.new("_s3d_evaluation")
+    objects = [ob] if collection is None else [ob, *collection.objects]
+    try:
+        scene.collection.objects.link(ob)
+        if collection is not None:
+            scene.collection.children.link(collection)
+        with bpy.context.temp_override(scene=scene, view_layer=scene.view_layers[0]):
+            graph = bpy.context.evaluated_depsgraph_get()
+            return bpy.data.meshes.new_from_object(
+                ob.evaluated_get(graph), depsgraph=graph,
+                preserve_all_data_layers=preserve_all_data_layers)
+    finally:
+        bpy.data.batch_remove([*objects, scene, *([collection] if collection is not None else [])])
 
 
 # ---------------------------------------------------------------- the program's unit
@@ -128,9 +151,51 @@ def given_name(ob):
     return ob.get(NAME, ob.name)
 
 
+# Objects touched during the current public call. References live only until its hooks
+# finish: removed IDs are filtered there, so a reused address cannot hit old state.
+hook_objects = []
+hook_all = False
+
+
+def touch(value):
+    """Conservatively include object arguments and results, including nested calls."""
+    global hook_all
+    from .assembly import Handle
+    if isinstance(value, Handle):
+        value = value.root
+    if isinstance(value, bpy.types.Object):
+        try:
+            if value.type == "EMPTY":
+                hook_all = True          # descendants may inherit or have been rebuilt
+            hook_objects.append(value)
+        except ReferenceError:
+            pass
+    elif isinstance(value, (list, tuple)):
+        for item in value:
+            touch(item)
+    elif isinstance(value, dict):
+        for item in value.values():
+            touch(item)
+
+
+def touched():
+    """Live candidates; None requests the conservative whole-scene path."""
+    if hook_all:
+        return None
+    live = {}
+    for ob in hook_objects:
+        try:
+            if ob.as_pointer():
+                live[ob.as_pointer()] = ob
+        except ReferenceError:
+            pass
+    return list(live.values())
+
+
 def link(ob):
     """Put `ob` in the scene, where the exporter and the depsgraph see it."""
     bpy.context.scene.collection.objects.link(ob)
+    hook_objects.append(ob)
     return ob
 
 
@@ -145,6 +210,7 @@ FACE_TAG, EDGE_TAG = "s3d_face:", "s3d_edge:"
 NAME_MAX = 67
 
 
+@lru_cache(maxsize=8192)
 def _size(s):
     return len(s.encode())
 
@@ -155,6 +221,7 @@ def _fit(s, n):
     return s if len(b) <= n else b[:max(n - 9, 0)].decode(errors="ignore") + "~" + hashlib.sha1(b).hexdigest()[:8]
 
 
+@lru_cache(maxsize=8192)
 def tag_key(prefix, tag):
     """The attribute name that holds `tag`: `prefix + tag`, or, past NAME_MAX bytes, the
     part before the last dot shortened with a digest, so long names stay apart and the
@@ -166,6 +233,7 @@ def tag_key(prefix, tag):
     return prefix + _fit(name, NAME_MAX - _size(prefix + dot + cap)) + dot + cap
 
 
+@lru_cache(maxsize=8192)
 def stored(prefix, tag):
     """`tag` as the attribute holding it spells it, without the prefix."""
     return tag_key(prefix, tag)[len(prefix):]
@@ -296,28 +364,31 @@ def write_tags(bm, name, face_tags, edge_tags):
     """Write provenance onto `bm` by element index: tag sets per face and per edge
     (None for an edge that is no real edge), each tag plain and qualified by `name`.
     Real edges are marked sharp, faces smooth."""
-    def qualified(tags):
-        return set(tags) | {f"{name}.{t}" for t in tags if "." not in t} if name else set(tags)
-    face_tags = [qualified(t) for t in face_tags]
-    edge_tags = [None if t is None else qualified(t) for t in edge_tags]
-    for t in sorted({t for tags in face_tags for t in tags}):
-        if bm.faces.layers.bool.get(tag_key(FACE_TAG, t)) is None:
-            bm.faces.layers.bool.new(tag_key(FACE_TAG, t))
-    for t in sorted({t for tags in edge_tags if tags for t in tags}):
-        if bm.edges.layers.bool.get(tag_key(EDGE_TAG, t)) is None:
-            bm.edges.layers.bool.new(tag_key(EDGE_TAG, t))
-    flayers = {lay.name[len(FACE_TAG):]: lay for lay in bm.faces.layers.bool.values()
-               if lay.name.startswith(FACE_TAG)}
-    elayers = {lay.name[len(EDGE_TAG):]: lay for lay in bm.edges.layers.bool.values()
-               if lay.name.startswith(EDGE_TAG)}
-    for f, tags in zip(bm.faces, face_tags):
-        for t in tags:
-            f[flayers[stored(FACE_TAG, t)]] = True
-        f.smooth = True
-    for e, tags in zip(bm.edges, edge_tags):
-        for t in tags or ():
-            e[elayers[stored(EDGE_TAG, t)]] = True
-        e.smooth = tags is None
+    def names(groups):
+        tags = {tag for group in groups if group for tag in group}
+        return {tag: {tag, f"{name}.{tag}"} if name and "." not in tag else {tag}
+                for tag in tags}
+    fnames, enames = names(face_tags), names(edge_tags)
+    for domain, prefix, mapping in ((bm.faces, FACE_TAG, fnames), (bm.edges, EDGE_TAG, enames)):
+        for tag in sorted({t for qualified in mapping.values() for t in qualified}):
+            key = tag_key(prefix, tag)
+            if domain.layers.bool.get(key) is None:
+                domain.layers.bool.new(key)
+    # Resolve handles only once every layer exists: adding one invalidates handles.
+    flayers = {tag: tuple(bm.faces.layers.bool[tag_key(FACE_TAG, t)] for t in qualified)
+               for tag, qualified in fnames.items()}
+    elayers = {tag: tuple(bm.edges.layers.bool[tag_key(EDGE_TAG, t)] for t in qualified)
+               for tag, qualified in enames.items()}
+    for face, tags in zip(bm.faces, face_tags):
+        for tag in tags:
+            for layer in flayers[tag]:
+                face[layer] = True
+        face.smooth = True
+    for edge, tags in zip(bm.edges, edge_tags):
+        for tag in tags or ():
+            for layer in elayers[tag]:
+                edge[layer] = True
+        edge.smooth = tags is None
 
 
 def new_object(name, bm):
@@ -331,8 +402,13 @@ def new_object(name, bm):
 
 def extent(ob, axis):
     """The size of `ob`'s own mesh along an axis (0, 1, 2), before any placement."""
-    values = [v.co[axis] for v in ob.data.vertices]
-    return max(values) - min(values)
+    co = np.empty(len(ob.data.vertices) * 3, dtype=np.float32)
+    ob.data.vertices.foreach_get("co", co)
+    values = co.reshape(-1, 3)[:, axis]
+    if not len(values) or np.isnan(values).any():
+        values = values.tolist()
+        return max(values) - min(values)
+    return float(values[values.argmax()]) - float(values[values.argmin()])
 
 
 def bridge(bm, a, b):
@@ -381,22 +457,25 @@ def segments(r, sweep=360.0):
 def add_tags(bm, face_add, edge_add):
     """Add names to elements of `bm` by index: {face index: tags}, {edge index: tags}.
     Edges that gain a name become sharp."""
-    for t in sorted({t for tags in face_add.values() for t in tags}):
-        if bm.faces.layers.bool.get(tag_key(FACE_TAG, t)) is None:
-            bm.faces.layers.bool.new(tag_key(FACE_TAG, t))
-    for t in sorted({t for tags in edge_add.values() for t in tags}):
-        if bm.edges.layers.bool.get(tag_key(EDGE_TAG, t)) is None:
-            bm.edges.layers.bool.new(tag_key(EDGE_TAG, t))
+    layers = []
+    for domain, prefix, additions in ((bm.faces, FACE_TAG, face_add), (bm.edges, EDGE_TAG, edge_add)):
+        resolved = {}
+        for tag in sorted({t for tags in additions.values() for t in tags}):
+            key = tag_key(prefix, tag)
+            layer = domain.layers.bool.get(key)
+            resolved[tag] = layer if layer is not None else domain.layers.bool.new(key)
+        layers.append(resolved)
+    face_layers, edge_layers = layers
     bm.faces.ensure_lookup_table()
     bm.edges.ensure_lookup_table()
     for i, tags in face_add.items():
         f = bm.faces[i]
         for t in tags:
-            f[bm.faces.layers.bool[tag_key(FACE_TAG, t)]] = True
+            f[face_layers[t]] = True
     for i, tags in edge_add.items():
         e = bm.edges[i]
         for t in tags:
-            e[bm.edges.layers.bool[tag_key(EDGE_TAG, t)]] = True
+            e[edge_layers[t]] = True
         e.smooth = False
     bm.normal_update()
 
@@ -461,15 +540,18 @@ SHADE = "s3d~smooth"
 CREASE = "s3d~crease"
 
 
-def shade_meshes():
+def shade_meshes(objects=None):
     """Enforce program shading after a verb, including rebuilt meshes: flat under a fixed
     facet count, and by its own angle for a part `smooth` shaded."""
-    own = {ob.data.as_pointer(): ob[SHADE] for ob in bpy.data.objects if ob.type == "MESH" and SHADE in ob}
+    all_meshes = objects is None
+    objects = list(bpy.data.objects if all_meshes else objects)
+    own = {ob.data.as_pointer(): ob[SHADE] for ob in objects if ob.type == "MESH" and SHADE in ob}
     flat = FACETS is not None and not FACET_SMOOTH
     if not own and not flat:
         return
-    kept = {ob.data.as_pointer() for ob in bpy.data.objects if ob.type == "MESH" and ob.get("s3d~merged.shading")}
-    for mesh in bpy.data.meshes:
+    kept = {ob.data.as_pointer() for ob in objects if ob.type == "MESH" and ob.get("s3d~merged.shading")}
+    meshes = bpy.data.meshes if all_meshes else dict.fromkeys(ob.data for ob in objects if ob.type == "MESH")
+    for mesh in meshes:
         if mesh.as_pointer() in kept:
             continue
         angle = own.get(mesh.as_pointer())
@@ -502,3 +584,12 @@ def turn_steps(paths):
                     for a, b in zip(directions, directions[1:]))
         turn = max(turn, angle)
     return max(1, math.ceil(FACETS * turn / (2 * math.pi) - 1e-4))
+
+
+def own_mesh(ob):
+    """Detach shared data before a verb writes to this part alone; the call's hooks then
+    revisit the part, even when the verb was handed only its parent."""
+    hook_objects.append(ob)
+    if ob.data.users > 1:
+        ob.data = ob.data.copy()
+    return ob.data

@@ -449,8 +449,6 @@ def _twins(mech, renamed, coll):
 
 def undo(state, coll):
     renamed, temps = state
-    for t in temps:
-        bpy.data.objects.remove(t)
-    bpy.data.collections.remove(coll)
+    bpy.data.batch_remove([*temps, coll])
     for ob, name in renamed:
         ob.name = name

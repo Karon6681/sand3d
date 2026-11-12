@@ -181,8 +181,8 @@ def _return_meshes(lent):
     objects, copies = lent
     for ob, mesh in objects:
         ob.data = mesh
+    bpy.data.batch_remove([own for own, name in copies.values()])
     for mesh, (own, name) in copies.items():
-        bpy.data.meshes.remove(own)
         mesh.name = name
 
 

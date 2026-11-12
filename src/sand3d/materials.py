@@ -21,6 +21,7 @@ import math
 from contextlib import contextmanager
 
 import bpy
+import numpy as np
 
 from . import _core
 
@@ -92,13 +93,20 @@ def material(ob, kind, color=None, roughness=None, metallic=None, opacity=None, 
     sets it. Cycles uses the closed mesh's actual depth. ior is 1..1000, transmission 0..1.
     None inherits the preset. Water absorbs over one metre with IOR 1.333.
 
-    color may be a deterministic callable. inspect.signature must declare exactly
-    three or four or five positional parameters, no variadics or keyword-only parameters:
-    color(x, y, z[, n[, u]]), at each face centre in local space, in program units;
-    n is its outward unit normal tuple; u is its maker's lengthwise 0..1. Readers evaluate once per face in index
-    order, without caching. Functions live in a Python registry referenced by the
-    object tag; copy keeps the reference, join and merge keep the first object's.
-    Functions are session-local and are not serialised into Blender files."""
+    color may be a deterministic callable declaring exactly three, four or five
+    positional parameters, no variadics or keyword-only parameters:
+    color(x, y, z[, n[, u]]), at local face centres in program units. Scalar calls
+    receive an outward unit normal tuple and lengthwise u, returning sRGB hex or
+    an RGB tuple/list in [0, 1]. Array calls receive float64 x/y/z/u of shape (k,)
+    and n of shape (3, k), returning a numeric NumPy RGB array of shape (k, 3) in [0, 1].
+    A probe on up to eight faces selects array evaluation; an exception or wrong
+    shape falls back to scalar calls in face index order. Array evaluation then
+    calls once for all faces of the part. The probe is an extra call: functions
+    must be pure, without side effects or random state, and agree in both forms.
+    Each export evaluates anew; corner and mean readers share the result within
+    that export, and identical instances can share it too. Functions are session-local, not serialised in Blender files;
+    copy keeps the reference, join and merge keep the first object's.
+    """
     from .assembly import Handle
     from .edit import _flat
     if kind not in PRESETS:
@@ -244,13 +252,28 @@ def _nearest(ob):
     return None
 
 
-def resolve():
+def _separate_materials():
+    """Partition shared data only where inherited material tags disagree."""
+    groups = {}
+    for ob in bpy.data.objects:
+        if ob.type == "MESH":
+            groups.setdefault(ob.data, {}).setdefault(_nearest(ob), []).append(ob)
+    for mesh, tags in groups.items():
+        for parts in list(tags.values())[1:]:
+            own = mesh.copy()
+            for ob in parts:
+                ob.data = own
+
+
+def resolve(objects=None):
     """Give every mesh the material of its nearest tagged ancestor-or-self; take ours off
     a mesh that has none any more. Nothing to do in a program that sets no material."""
     if not _core.dressed:
         return
+    if objects is None:              # tags and hierarchy change only on the whole-scene path
+        _separate_materials()
     made = {m[TAG]: m for m in bpy.data.materials if TAG in m}
-    for ob in sorted(bpy.data.objects, key=lambda o: o.name):
+    for ob in sorted(bpy.data.objects if objects is None else objects, key=lambda o: o.name):
         if ob.type != "MESH":
             continue
         tag = _nearest(ob)
@@ -263,8 +286,11 @@ def resolve():
         if have != [want]:
             ob.data.materials.clear()
             ob.data.materials.append(want)
-        if any(p.material_index for p in ob.data.polygons):
-            ob.data.polygons.foreach_set("material_index", [0] * len(ob.data.polygons))
+        if ob.data.attributes.get("material_index") is not None:
+            indices = np.empty(len(ob.data.polygons), dtype=np.int32)
+            ob.data.polygons.foreach_get("material_index", indices)
+            if indices.any():
+                ob.data.polygons.foreach_set("material_index", np.zeros(len(indices), dtype=np.int32))
 
 
 def dressed():
@@ -298,6 +324,42 @@ def face_colors(ob):
     if count == 5 and (parameter is None or any(not math.isfinite(u) for u in parameter)):
         raise ValueError(f"material: {_core.given_name(ob)!r} has no lengthwise u; "
                          "use loft, wire, sweep, revolve, dome, sphere, cone or cylinder")
+    # Blender stores these coordinates as floats; widen before calling the function,
+    # exactly as tuple(face.center) does in the scalar path.
+    centres = np.empty((len(mesh.polygons), 3), dtype=np.float64)
+    mesh.polygons.foreach_get('center', centres.ravel())
+    args = tuple(centres.T)
+    if count >= 4:
+        normals = np.empty_like(centres)
+        mesh.polygons.foreach_get('normal', normals.ravel())
+        args += (normals.T,)
+    if count == 5:
+        args += (np.asarray(parameter, dtype=np.float64),)
+    size = min(8, len(centres))
+    vectorized = False
+    try:
+        probe = fn(*(a[..., :size] for a in args))
+        vectorized = isinstance(probe, np.ndarray) and probe.shape == (size, 3)
+    except Exception:
+        # Scalar functions may reject arrays in arbitrary user code.
+        pass
+    if vectorized:
+        try:
+            values = np.asarray(fn(*args))
+            if values.shape != (len(centres), 3):
+                raise ValueError(f"expected RGB array shape ({len(centres)}, 3), got {values.shape}")
+            if values.dtype.kind not in 'fiu':
+                raise ValueError("expected a numeric RGB array")
+            values = values.astype(np.float64)
+            if not np.all(np.isfinite(values) & (values >= 0) & (values <= 1)):
+                raise ValueError("RGB array values must be finite and in [0, 1]")
+        except Exception as exc:
+            raise ValueError(f"material: invalid colour array: {exc}") from exc
+        # Python's float pow keeps the scalar conversion bit-identical in float64.
+        linear = np.fromiter((c/12.92 if c <= .04045 else ((c+.055)/1.055)**2.4
+                              for c in map(float, values.ravel())), np.float64,
+                             values.size).reshape(-1, 3)
+        return [(*rgb, 1.) for rgb in linear.tolist()]
     result = []
     for face in mesh.polygons:
         centre = tuple(face.center)
@@ -315,14 +377,16 @@ def face_colors(ob):
                 rgba = (*(c/12.92 if c <= .04045 else ((c+.055)/1.055)**2.4 for c in value), 1.)
             result.append(rgba)
         except (ValueError, TypeError, OverflowError) as exc:
-            raise ValueError(f"material: invalid colour at face centre {centre}") from exc
+            raise ValueError(f"material: invalid colour at face centre {centre}; "
+                             "expected scalar hex/RGB in [0, 1] or numeric RGB array shape (k, 3)") from exc
     return result
 
 
-def mean_tag(ob):
+def mean_tag(ob, colors=None):
     """Area-weighted linear mean, encoded as sRGB for single-colour readers."""
     tag = _nearest(ob)
-    colors = face_colors(ob)
+    if colors is None:
+        colors = face_colors(ob)
     if colors is None:
         return tag
     mesh = ob.data
@@ -342,37 +406,46 @@ def put_colors(mesh, colors):
     attr = mesh.color_attributes.get(COLOR_ATTRIBUTE)
     if attr is None:
         attr = mesh.color_attributes.new(name=COLOR_ATTRIBUTE, type='FLOAT_COLOR', domain='CORNER')
-    for face, color in zip(mesh.polygons, colors):
-        for i in face.loop_indices:
-            attr.data[i].color = color
+    sizes = np.empty(len(mesh.polygons), dtype=np.int32)
+    mesh.polygons.foreach_get("loop_total", sizes)
+    corners = np.repeat(np.asarray(colors, dtype=np.float32).reshape(-1, 4), sizes, axis=0)
+    attr.data.foreach_set("color", corners.ravel())
     mesh.color_attributes.active_color = attr
     mesh.color_attributes.render_color_index = list(mesh.color_attributes).index(attr)
 
 
 @contextmanager
 def exporting(root, mode="material"):
-    """Lend independent corner-coloured meshes and shared surface materials.
+    """Lend one corner-coloured mesh per source and material.
 
     A surface that gives light keeps its colour in its material, where its emission
     reads it — the mean of a colour function's — so two glows of different colours
     are two materials; every other colour goes to the corners, on a white base."""
     from .meshfile import _meshes
     saved, made = [], {}
+    shared = {}
     parts = _meshes(root)
     before = set(bpy.data.materials)
     was_dressed = _core.dressed
     try:
         for ob in parts:
+            key = (ob.data, _nearest(ob))
+            if key in shared:
+                original = ob.data
+                ob.data = shared[key]
+                saved.append((ob, original, ob.data))
+                continue
             colors = face_colors(ob)
             if colors is None and mode == "material":
                 continue
             source = _nearest(ob) or '{"kind":"plastic", "color":"#cccccc"}'
             v = look(source)
-            glow = json.loads(mean_tag(ob))["color"] if colors is not None else v["color"]
+            glow = json.loads(mean_tag(ob, colors))["color"] if colors is not None else v["color"]
             if colors is None:
                 colors = [_linear(v['color'])] * len(ob.data.polygons)
             original = ob.data
             mesh = original.copy()
+            shared[key] = mesh
             saved.append((ob, original, mesh))
             ob.data = mesh
             put_colors(mesh, colors)
@@ -398,9 +471,7 @@ def exporting(root, mode="material"):
         _core.dressed = was_dressed
         for ob, original, mesh in reversed(saved):
             ob.data = original
-            bpy.data.meshes.remove(mesh)
-        for mat in set(bpy.data.materials) - before:
-            bpy.data.materials.remove(mat)
+        bpy.data.batch_remove([*shared.values(), *(set(bpy.data.materials) - before)])
 
 
 @contextmanager

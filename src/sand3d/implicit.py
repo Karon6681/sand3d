@@ -8,21 +8,16 @@ from . import _core
 from .edit import NOISES
 
 
-def _hash(x, y, z, seed):
-    # Integer mixer using explicitly wrapping 32-bit arithmetic.
+def _mix(h, seed):
+    # Own the buffer: callers share the coordinate products across neighbours.
+    h = np.asarray(h ^ np.uint32(seed & 0xFFFFFFFF), dtype=np.uint32)
     with np.errstate(over="ignore"):
-        h = (
-            x.astype(np.uint32) * np.uint32(1597334677)
-            ^ y.astype(np.uint32) * np.uint32(3812015801)
-            ^ z.astype(np.uint32) * np.uint32(2798796415)
-            ^ np.uint32(seed & 0xFFFFFFFF)
-        )
-        h = np.asarray(h, dtype=np.uint32)
         h ^= h >> np.uint32(16)
         h *= np.uint32(2246822519)
         h ^= h >> np.uint32(13)
         h *= np.uint32(3266489917)
-        return h ^ (h >> np.uint32(16))
+        h ^= h >> np.uint32(16)
+    return h
 
 
 def noise(x, y, z, seed=0, kind="perlin"):
@@ -40,38 +35,81 @@ def noise(x, y, z, seed=0, kind="perlin"):
         raise ValueError("noise: coordinates must be finite and within 2**50")
     base = [np.floor(a).astype(np.int64) for a in q]
     frac = [a - b for a, b in zip(q, base)]
-    if kind == "cells":
-        distance = np.full(q[0].shape, np.inf)
-        for delta in itertools.product((-1, 0, 1), repeat=3):
-            b = [a + d for a, d in zip(base, delta)]
-            dist = np.zeros(q[0].shape)
+    steps = (-1, 0, 1) if kind == "cells" else (0, 1)
+    with np.errstate(over="ignore"):
+        products = [
+            {d: (b.astype(np.uint32) + np.uint32(d & 0xFFFFFFFF)) * np.uint32(k)
+             for d in steps}
+            for b, k in zip(base, (1597334677, 3812015801, 2798796415))
+        ]
+    if q[0].size <= 64:
+        # A leading neighbour axis amortizes ufunc/Python overhead for scalars.
+        neighbours = np.array(list(itertools.product(steps, repeat=3)))
+        shape = (len(neighbours),) + (1,) * q[0].ndim
+        offsets = [neighbours[:, c].reshape(shape) for c in range(3)]
+        hashed = [np.stack([products[c][d] for d in neighbours[:, c]])
+                  for c in range(3)]
+        hashed = hashed[0] ^ hashed[1] ^ hashed[2]
+        if kind == "cells":
+            dist = np.zeros((len(neighbours),) + q[0].shape)
             for c in range(3):
-                offset = (
-                    _hash(*b, seed + 1013 * (c + 1)).astype(np.float64) / 4294967296
-                )
-                dist += (delta[c] + offset - frac[c]) ** 2
-            distance = np.minimum(distance, dist)
-        result = 1 - 2 * np.minimum(1, np.sqrt(distance) / math.sqrt(3))
-    else:
-        fade = [f * f * f * (f * (f * 6 - 15) + 10) for f in frac]
-        result = np.zeros(q[0].shape)
-        for corner in itertools.product((0, 1), repeat=3):
-            h = _hash(*[b + d for b, d in zip(base, corner)], seed)
-            # Twelve edge directions of the cube, constructed without a table.
+                offset = _mix(hashed, seed + 1013 * (c + 1)).astype(np.float64) / 4294967296
+                dist += (offsets[c] + offset - frac[c]) ** 2
+            result = 1 - 2 * np.minimum(1, np.sqrt(dist.min(axis=0)) / math.sqrt(3))
+        else:
+            h = _mix(hashed, seed)
             axis = h % 3
-            dot = np.zeros(q[0].shape)
+            dot = np.zeros(h.shape)
+            weight = np.ones(h.shape)
             for c in range(3):
                 sign = np.where((h >> (c + 3)) & 1, 1.0, -1.0)
-                dot += np.where(axis == c, 0.0, sign * (frac[c] - corner[c]))
-            weight = np.ones(q[0].shape)
-            for c in range(3):
-                weight *= fade[c] if corner[c] else 1 - fade[c]
-            result += weight * dot
-        result = np.clip(result, -1, 1)
-        if kind == "ridged":
-            result = 1 - 2 * np.abs(result)
-        if kind == "turbulence":
-            result = 2 * np.abs(result) - 1
+                dot += np.where(axis == c, 0.0, sign * (frac[c] - offsets[c]))
+                f = frac[c]
+                fade = f * f * f * (f * (f * 6 - 15) + 10)
+                weight *= np.where(offsets[c], fade, 1 - fade)
+            # Accumulate in original corner order, including the initial +0.
+            terms = weight * dot
+            result = np.zeros(q[0].shape)
+            for term in terms:
+                result += term
+            result = np.clip(result, -1, 1)
+            if kind == "ridged":
+                result = 1 - 2 * np.abs(result)
+            if kind == "turbulence":
+                result = 2 * np.abs(result) - 1
+    else:
+        if kind == "cells":
+            distance = np.full(q[0].shape, np.inf)
+            for delta in itertools.product((-1, 0, 1), repeat=3):
+                hashed = products[0][delta[0]] ^ products[1][delta[1]] ^ products[2][delta[2]]
+                dist = np.zeros(q[0].shape)
+                for c in range(3):
+                    offset = (
+                        _mix(hashed, seed + 1013 * (c + 1)).astype(np.float64) / 4294967296
+                    )
+                    dist += (delta[c] + offset - frac[c]) ** 2
+                np.minimum(distance, dist, out=distance)
+            result = 1 - 2 * np.minimum(1, np.sqrt(distance) / math.sqrt(3))
+        else:
+            fade = [f * f * f * (f * (f * 6 - 15) + 10) for f in frac]
+            result = np.zeros(q[0].shape)
+            for corner in itertools.product((0, 1), repeat=3):
+                h = _mix(products[0][corner[0]] ^ products[1][corner[1]] ^ products[2][corner[2]], seed)
+                # Twelve edge directions of the cube, constructed without a table.
+                axis = h % 3
+                dot = np.zeros(q[0].shape)
+                for c in range(3):
+                    sign = np.where((h >> (c + 3)) & 1, 1.0, -1.0)
+                    dot += np.where(axis == c, 0.0, sign * (frac[c] - corner[c]))
+                weight = np.ones(q[0].shape)
+                for c in range(3):
+                    weight *= fade[c] if corner[c] else 1 - fade[c]
+                result += weight * dot
+            result = np.clip(result, -1, 1)
+            if kind == "ridged":
+                result = 1 - 2 * np.abs(result)
+            if kind == "turbulence":
+                result = 2 * np.abs(result) - 1
     return float(result) if result.ndim == 0 else result
 
 
@@ -407,8 +445,19 @@ def field(name, size, density, *, cell, level=0, min_component_cells=3):
                 jj, ii = np.nonzero(mask)
             bases.append(z * plane + jj.ravel() * nx + ii.ravel())
         ids = np.concatenate(bases)[:, None] + offsets
-        unique, inverse = np.unique(ids, return_inverse=True)
-        shared = np.isin(unique, prev_ids, assume_unique=True)
+        if active is None:
+            # Dense slabs contain every grid point; indexing needs no sort.
+            unique = np.arange(k * plane, (end + 1) * plane)
+            inverse = (ids - k * plane).ravel()
+        else:
+            unique, inverse = np.unique(ids, return_inverse=True)
+        # Both arrays are sorted, and only the previous slab's top is shared.
+        shared = unique < k * plane + plane if k else np.zeros(len(unique), dtype=bool)
+        if active is not None:
+            where = np.searchsorted(prev_ids, unique)
+            shared = np.zeros(len(unique), dtype=bool)
+            valid = where < len(prev_ids)
+            shared[valid] = prev_ids[where[valid]] == unique[valid]
         vals = np.empty(len(unique))
         vals[shared] = prev_vals[np.searchsorted(prev_ids, unique[shared])]
         samples += np.count_nonzero(~shared)
@@ -468,7 +517,9 @@ def field(name, size, density, *, cell, level=0, min_component_cells=3):
     for start in range(0, len(edges), 65536):
         e = edges[start : start + 65536]
         p, q = points(e[:, 0]), points(e[:, 1])
-        va, vb = sample(e[:, 0]), sample(e[:, 1])
+        endpoints, endpoint_inverse = np.unique(e, return_inverse=True)
+        endpoint_values = sample(endpoints)[endpoint_inverse].reshape(e.shape)
+        va, vb = endpoint_values[:, 0], endpoint_values[:, 1]
         scale = np.maximum(np.abs(va), np.abs(vb))
         scale[scale == 0] = 1
         fl, fr = va / scale, vb / scale
@@ -522,7 +573,7 @@ def field(name, size, density, *, cell, level=0, min_component_cells=3):
     # Vectorized oriented incidence, including exact-level singularities.
     ee = np.concatenate((faces[:, [0, 1]], faces[:, [1, 2]], faces[:, [2, 0]]))
     ordered = np.sort(ee, axis=1)
-    _, inverse, counts = np.unique(
+    edge_keys, inverse, counts = np.unique(
         ordered[:, 0] * len(verts) + ordered[:, 1],
         return_inverse=True,
         return_counts=True,
@@ -556,14 +607,25 @@ def field(name, size, density, *, cell, level=0, min_component_cells=3):
                     "field: singular vertex at level; change level or cell"
                 )
     if min_component_cells:
+        # Reduce the fixed, unique adjacency in sorted groups, rather than
+        # scattering every duplicate triangle edge on each iteration.
+        u, v = edge_keys // len(verts), edge_keys % len(verts)
+        sources = np.concatenate((u, v))
+        neighbours = np.concatenate((v, u))
+        order = np.argsort(sources, kind="stable")
+        sources, neighbours = sources[order], neighbours[order]
+        starts = np.r_[0, np.flatnonzero(np.diff(sources)) + 1]
+        vertices = sources[starts]
         labels = np.arange(len(verts))
         while True:
             old = labels.copy()
-            np.minimum.at(labels, ee[:, 0], labels[ee[:, 1]])
-            np.minimum.at(labels, ee[:, 1], labels[ee[:, 0]])
+            labels[vertices] = np.minimum(
+                labels[vertices], np.minimum.reduceat(labels[neighbours], starts)
+            )
             labels = labels[labels]
             if np.array_equal(labels, old):
                 break
+        del sources, neighbours, order, starts, vertices, u, v
         roots, comp = np.unique(labels, return_inverse=True)
         low = np.full((len(roots), 3), np.inf)
         high = -low.copy()

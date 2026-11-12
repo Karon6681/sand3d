@@ -62,6 +62,11 @@ def _verb(fn):
 
     @functools.wraps(fn)
     def verb(*args, **kwargs):
+        if not _guard.calls:
+            _core.hook_objects.clear()
+            _core.hook_all = False
+        _core.touch(args)
+        _core.touch(kwargs)
         _core.settled = True
         line = sys._getframe(1).f_lineno
         _guard.calls.append((name, line, set(positional[:len(args)]) | set(kwargs)))
@@ -70,8 +75,13 @@ def _verb(fn):
             result = fn(*args, **kwargs)
         finally:
             _guard.calls.pop()
+        _core.touch(result)
+        # Tagging a mesh can change the material of children which name none of
+        # their own. Hierarchy edits likewise need a conservative traversal.
+        if name in ("material", "group", "assembly", "attach"):
+            _core.hook_all = True
         if _core.dressed and not _guard.calls:
-            _resolve()                   # every mesh wears its nearest material, whatever the verb rebuilt
+            _resolve(_core.touched())                   # every mesh wears its nearest material, whatever the verb rebuilt
         if name in ("at", "transform", "station"):
             for placed in result if isinstance(result, list) else [result]:
                 if isinstance(placed, (_Placed, _Path)):
@@ -84,7 +94,8 @@ def _verb(fn):
                 _placed_again(result)
         if name == "transform":
             _placed_again(result)
-        _core.shade_meshes()
+        if not _guard.calls:
+            _core.shade_meshes(_core.touched())
         return result
     return verb
 

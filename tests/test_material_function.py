@@ -1,5 +1,6 @@
 """Local rest-space face colour functions."""
 import unittest
+import numpy as np
 import sand3d as s3d
 from sand3d import materials
 
@@ -27,8 +28,97 @@ class MaterialFunction(unittest.TestCase):
         s3d.twist(a, 30, axis='+Z')
         self.assertEqual(calls, [])
         colors = materials.face_colors(a)
-        self.assertEqual(len(calls), len(a.data.polygons))
-        self.assertEqual(len(colors), len(calls))
+        self.assertEqual(len(calls), len(a.data.polygons) + 1)
+        self.assertEqual(len(colors), len(calls) - 1)
+
+    def test_export_evaluates_once(self):
+        from unittest.mock import patch
+        a = s3d.box('a', 20, 20, 20)
+        s3d.material(a, 'plastic', color=lambda x,y,z: '#336699')
+        with patch.object(materials, 'face_colors', wraps=materials.face_colors) as evaluate:
+            with materials.exporting(a):
+                self.assertEqual(evaluate.call_count, 1)
+
+    def test_corner_colours(self):
+        a = s3d.cone('mixed', 20, 50)
+        colors = [materials._linear('#336699' if i % 2 else '#ff0000')
+                  for i in range(len(a.data.polygons))]
+        materials.put_colors(a.data, colors)
+        for face, color in zip(a.data.polygons, colors):
+            for i in face.loop_indices:
+                for actual, expected in zip(a.data.color_attributes['Colour'].data[i].color, color):
+                    self.assertAlmostEqual(actual, expected, places=7)
+
+    def test_face_u_matches_scalar_sum(self):
+        from sand3d._coordinates import face_u, NAMES
+        a = s3d.cone('a', 20, 50)
+        mesh = a.data
+        s, e = (mesh.attributes[n] for n in (NAMES[0], NAMES[-1]))
+        def reference():
+            return [sum(s.data[i].value/e.data[i].value if e.data[i].value else float('nan')
+                        for i in f.vertices)/len(f.vertices) for f in mesh.polygons]
+        self.assertEqual(face_u(mesh), reference())
+        rng = np.random.default_rng(0)
+        s.data.foreach_set('value', rng.uniform(-100, 100, len(s.data)))
+        e.data.foreach_set('value', rng.uniform(.1, 100, len(e.data)))
+        self.assertEqual(face_u(mesh), reference())
+        e.data[0].value = 0
+        import math
+        for actual, expected in zip(face_u(mesh), reference()):
+            self.assertTrue(math.isnan(actual) if math.isnan(expected) else actual == expected)
+
+    def test_array_colours_equal_scalar(self):
+        a = s3d.cone('a', 20, 50)
+        calls = []
+        def color(x,y,z,n,u):
+            calls.append((np.shape(x), np.shape(n), np.shape(u)))
+            return np.stack((x*0+.2, n[2]*.1+.5, u*.3), axis=-1)
+        s3d.material(a, 'plastic', color=color)
+        vector = materials.face_colors(a)
+        self.assertEqual(calls, [((8,), (3,8), (8,)),
+                                 ((len(vector),), (3,len(vector)), (len(vector),))])
+        def scalar(x,y,z,n,u):
+            if not np.isscalar(x):
+                raise TypeError('scalar only')
+            return color(x,y,z,n,u).tolist()
+        s3d.material(a, 'plastic', color=scalar)
+        self.assertEqual(vector, materials.face_colors(a))
+
+    def test_scalar_rgb_tuple_on_three_faces(self):
+        import bpy
+        mesh = bpy.data.meshes.new('three faces')
+        mesh.from_pydata([(0,0,0),(1,0,0),(0,1,0),(0,0,1)], [],
+                         [(0,1,2),(0,2,3),(0,3,1)])
+        a = bpy.data.objects.new('three faces', mesh)
+        bpy.context.collection.objects.link(a)
+        s3d.material(a, 'plastic', color=lambda x,y,z: (x*.2, y*.3, z*.4))
+        expected = [materials._linear((f.center.x*.2, f.center.y*.3, f.center.z*.4))
+                    for f in mesh.polygons]
+        self.assertEqual(materials.face_colors(a), expected)
+
+    def test_array_errors_and_scalar_fallback(self):
+        a = s3d.box('a', 10, 10, 10)
+        def fallback(x,y,z):
+            if not np.isscalar(x):
+                return np.zeros((len(x), 4))
+            return (.2,.4,.6)
+        s3d.material(a, 'plastic', color=fallback)
+        self.assertEqual(materials.face_colors(a)[0], materials._linear((.2,.4,.6)))
+        for fn, message in [
+                (lambda x,y,z: np.zeros((3,len(np.atleast_1d(x)))), 'shape'),
+                (lambda x,y,z: np.full((len(x),3), 1.1), r'finite.*\[0, 1\]'),
+                (lambda x,y,z: np.full((len(x),3), np.nan), 'finite'),
+                (lambda x,y,z: np.full((len(x),3), True), 'numeric')]:
+            s3d.material(a, 'plastic', color=fn)
+            with self.assertRaisesRegex(ValueError, message):
+                materials.face_colors(a)
+        def changed(x,y,z):
+            return np.zeros((len(x), 3 if len(x) == 8 else 4))
+        # Six box faces would make the probe and full call the same size.
+        b = s3d.cone('b', 20, 50)
+        s3d.material(b, 'plastic', color=changed)
+        with self.assertRaisesRegex(ValueError, 'expected RGB array shape'):
+            materials.face_colors(b)
 
     def test_examples(self):
         a = s3d.loft('limb', *(s3d.station(z, 20, 20) for z in (0, 80, 160, 240)))
@@ -82,11 +172,13 @@ class MaterialFunction(unittest.TestCase):
         import sys
         code = """import sand3d as s
 from sand3d import materials
+import numpy as np
 s.empty_scene(); s.facets(6)
 a=s.wire('a',s.spline([(0,-798,1197),(0,-1302,1386),(0,-1218,1722),(0,-1092,2016)]),[(0,504),(.5,273),(1,336)],rings=1)
 s.material(a,'plastic',color=lambda x,y,z,n,u: '#ff0000' if int(u*6)%2 else '#0000ff')
 b=s.dome('cap',1200,450); s.displace(b,40,300,seed=3,refine=False)
-print(([tuple(v.co) for v in a.data.vertices], [tuple(f.vertices) for f in a.data.polygons], __import__('sand3d._coordinates',fromlist=['face_u']).face_u(a.data), materials.face_colors(a), [tuple(v.co) for v in b.data.vertices]))
+s.material(b,'plastic',color=lambda x,y,z,n,u: np.stack((x*0+.2,n[2]*.1+.5,u*.3),axis=-1))
+print(([tuple(v.co) for v in a.data.vertices], [tuple(f.vertices) for f in a.data.polygons], __import__('sand3d._coordinates',fromlist=['face_u']).face_u(a.data), materials.face_colors(a), materials.face_colors(b), [tuple(v.co) for v in b.data.vertices]))
 """
         a = subprocess.run([sys.executable, '-c', code], check=True, capture_output=True).stdout
         b = subprocess.run([sys.executable, '-c', code], check=True, capture_output=True).stdout
@@ -123,7 +215,7 @@ print(([tuple(v.co) for v in a.data.vertices], [tuple(f.vertices) for f in a.dat
             return '#336699'
         s3d.material(a, 'plastic', color=color)
         colors = materials.face_colors(a)
-        self.assertAlmostEqual(max(seen), .16)
+        self.assertAlmostEqual(max(z for z in seen if np.isscalar(z)), .16)
         self.assertEqual(colors[0], materials._linear('#336699'))
 
 
